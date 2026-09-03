@@ -41,13 +41,16 @@ const DYNATRACE_ASSIST_MODEL = process.env.DYNATRACE_ASSIST_MODEL || 'gpt-4.1';
 // One place that knows how to talk to each supported provider. Adding a new
 // OpenAI-compatible vendor needs no code change: pick "openai-compatible" and
 // pass a baseUrl. Anthropic and Ollama use their own request/response shapes.
+// fallbackModels stays within each provider's own family: falling back from
+// Claude to gpt-4o would just 404 against api.anthropic.com. maxOutputTokens is
+// a hard ceiling, since Anthropic caps output well below the OpenAI-shaped models.
 const PROVIDER_REGISTRY = {
-  'openai':            { baseUrl: 'https://api.openai.com/v1',              system: 'openai',            shape: 'openai' },
-  'openai-compatible': { baseUrl: '',                                       system: 'openai_compatible', shape: 'openai' },
-  'azure-openai':      { baseUrl: '',                                       system: 'azure_openai',      shape: 'openai' },
-  'github-models':     { baseUrl: 'https://models.inference.ai.azure.com',  system: 'github_models',     shape: 'openai' },
-  'anthropic':         { baseUrl: 'https://api.anthropic.com',              system: 'anthropic',         shape: 'anthropic' },
-  'ollama':            { baseUrl: OLLAMA_ENDPOINT,                          system: 'ollama',            shape: 'ollama' },
+  'openai':            { baseUrl: 'https://api.openai.com/v1',              system: 'openai',            shape: 'openai',    fallbackModels: ['gpt-4o', 'gpt-4.1-mini'], maxOutputTokens: 16000 },
+  'openai-compatible': { baseUrl: '',                                       system: 'openai_compatible', shape: 'openai',    fallbackModels: [],                         maxOutputTokens: 8000 },
+  'azure-openai':      { baseUrl: '',                                       system: 'azure_openai',      shape: 'openai',    fallbackModels: [],                         maxOutputTokens: 16000 },
+  'github-models':     { baseUrl: 'https://models.inference.ai.azure.com',  system: 'github_models',     shape: 'openai',    fallbackModels: ['gpt-4o', 'gpt-4.1-mini'], maxOutputTokens: 8000 },
+  'anthropic':         { baseUrl: 'https://api.anthropic.com',              system: 'anthropic',         shape: 'anthropic', fallbackModels: ['claude-3-5-haiku-latest'], maxOutputTokens: 8192 },
+  'ollama':            { baseUrl: OLLAMA_ENDPOINT,                          system: 'ollama',            shape: 'ollama',    fallbackModels: [],                         maxOutputTokens: 4096 },
 };
 
 function resolveProvider(provider) {
@@ -525,6 +528,16 @@ router.post('/complete', async (req, res) => {
   const apiKey = req.headers['x-ai-api-key'] || req.body.apiKey || req.headers['x-github-token'] || req.body.token;
   const providerKey = resolveProvider(provider);
   const def = PROVIDER_REGISTRY[providerKey];
+
+  // Validate config up front. These can never succeed on retry, so catching them
+  // here keeps the retry ladder below from burning attempts on them.
+  if (def.shape !== 'ollama' && !apiKey) {
+    return res.status(400).json({ success: false, error: `API key required for provider "${providerKey}".`, code: 'NO_CREDENTIAL' });
+  }
+  if ((providerKey === 'openai-compatible' || providerKey === 'azure-openai') && !String(baseUrl || def.baseUrl || '')) {
+    return res.status(400).json({ success: false, error: `Base URL required for provider "${providerKey}".`, code: 'NO_BASE_URL' });
+  }
+
   const serverAddress = (() => {
     try { return new URL(baseUrl || def.baseUrl).host; } catch { return def.system; }
   })();
@@ -553,10 +566,74 @@ router.post('/complete', async (req, res) => {
     ]),
   });
 
+  // Retry ladder: each model gets a full and a compact profile before we swap
+  // models, and 429s back off. Mirrors callAiProvider() in the AppEngine
+  // function so both routes behave the same. The whole ladder lives inside one
+  // span, and gen_ai.response.model records which model actually served it.
+  const runLadder = async () => {
+    const cappedMaxTokens = Math.min(maxTokens, def.maxOutputTokens || maxTokens);
+    const profiles = [
+      { maxTokens: cappedMaxTokens, timeoutMs: 120000, label: 'primary' },
+      { maxTokens: Math.max(700, Math.floor(cappedMaxTokens * 0.6)), timeoutMs: 60000, label: 'compact' },
+    ];
+    const modelChain = [...new Set([model, ...(def.fallbackModels || [])])];
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    let lastErr = null;
+
+    for (const candidate of modelChain) {
+      for (let p = 0; p < profiles.length; p++) {
+        const profile = profiles[p];
+        try {
+          const out = await callChatProvider({
+            provider: providerKey, model: candidate, baseUrl, apiKey, systemPrompt, prompt,
+            temperature, maxTokens: profile.maxTokens, timeoutMs: profile.timeoutMs,
+          });
+          if (candidate !== model) {
+            console.log(`[ai-generate] fallback succeeded on ${candidate} (requested ${model})`);
+          }
+          return out;
+        } catch (err) {
+          lastErr = err;
+          const status = err?.statusCode || 0;
+          const timedOut = /timed out|timeout|abort|signal/i.test(String(err?.message || ''));
+
+          // Auth failures never recover by retrying or swapping models.
+          if (status === 401 || status === 403) throw err;
+
+          if (status === 429) {
+            if (p < profiles.length - 1) {
+              const waitMs = 1500 * (p + 1);
+              console.warn(`[ai-generate] ${candidate} rate-limited, retrying compact in ${waitMs}ms`);
+              await sleep(waitMs);
+              continue;
+            }
+            console.warn(`[ai-generate] ${candidate} exhausted by rate limit, trying next model`);
+            break;
+          }
+
+          // Model rejected outright: no point retrying it smaller.
+          if (status === 400 || status === 404 || status === 422) {
+            console.warn(`[ai-generate] ${candidate} rejected (${status}), trying next model`);
+            break;
+          }
+
+          // Server-side or timeout: one compact retry, then next model.
+          if (timedOut || status >= 500 || status === 0) {
+            if (p < profiles.length - 1) {
+              console.warn(`[ai-generate] ${candidate} ${profile.label} failed (${timedOut ? 'timeout' : status}), retrying compact`);
+              continue;
+            }
+            break;
+          }
+          break;
+        }
+      }
+    }
+    throw lastErr || new Error('AI generation failed');
+  };
+
   try {
-    const out = await callChatProvider({
-      provider: providerKey, model, baseUrl, apiKey, systemPrompt, prompt, temperature, maxTokens,
-    });
+    const out = await runLadder();
     const durationMs = Date.now() - startTime;
 
     span.setAttributes({
@@ -616,16 +693,42 @@ router.post('/complete', async (req, res) => {
       'gen_ai.response.status': 'error',
     });
     console.error(`[ai-generate] ${def.system} error:`, err.message);
-    const code = status === 401 ? 'AUTH_FAILED' : status === 429 ? 'RATE_LIMITED' : 'PROVIDER_FAILED';
-    return res.status(status).json({ success: false, error: err.message || 'AI generation failed', code });
+    // GEN_TIMEOUT and RATE_LIMITED are the codes the UI's retry loop keys on,
+    // so keep them distinct from a generic provider failure.
+    const timedOut = /timed out|timeout|abort|signal/i.test(String(err?.message || ''));
+    const code = (status === 401 || status === 403) ? 'AUTH_FAILED'
+      : status === 429 ? 'RATE_LIMITED'
+      : timedOut ? 'GEN_TIMEOUT'
+      : 'PROVIDER_FAILED';
+    // Timeouts surface as 504 so the caller can distinguish them from a 500.
+    const httpStatus = timedOut && status === 500 ? 504 : status;
+    return res.status(httpStatus).json({ success: false, error: err.message || 'AI generation failed', code });
   }
 });
 
-// ── GET /api/ai-generate/models — list available models ──────────────────
+// ── GET /api/ai-generate/models — informational model reference ──────────
+// Informational only: any model string the configured provider accepts will
+// work, so this is a convenience list rather than a constraint. Note the model
+// IDs differ per provider: Anthropic's own API uses 'claude-3-5-sonnet-latest',
+// while the same family is exposed as 'claude-3.5-sonnet' through GitHub Models.
 router.get('/models', (_req, res) => {
   res.json({
     success: true,
     data: {
+      // Per-provider retry/ceiling behaviour, derived from the registry.
+      providers: Object.fromEntries(Object.entries(PROVIDER_REGISTRY).map(([id, d]) => [
+        id,
+        { shape: d.shape, fallbackModels: d.fallbackModels, maxOutputTokens: d.maxOutputTokens },
+      ])),
+      openai: [
+        { id: 'gpt-4.1', name: 'GPT-4.1', provider: 'OpenAI' },
+        { id: 'gpt-4o', name: 'GPT-4o', provider: 'OpenAI' },
+        { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini', provider: 'OpenAI' },
+      ],
+      anthropic: [
+        { id: 'claude-3-5-sonnet-latest', name: 'Claude 3.5 Sonnet', provider: 'Anthropic' },
+        { id: 'claude-3-5-haiku-latest', name: 'Claude 3.5 Haiku', provider: 'Anthropic' },
+      ],
       github_models: [
         { id: 'gpt-4.1', name: 'GPT-4.1', provider: 'OpenAI' },
         { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini', provider: 'OpenAI' },
@@ -634,8 +737,8 @@ router.get('/models', (_req, res) => {
         { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'OpenAI' },
         { id: 'o4-mini', name: 'o4-mini', provider: 'OpenAI' },
         { id: 'o3-mini', name: 'o3-mini', provider: 'OpenAI' },
-        { id: 'claude-sonnet-4', name: 'Claude Sonnet 4', provider: 'Anthropic' },
-        { id: 'claude-3.5-sonnet', name: 'Claude 3.5 Sonnet', provider: 'Anthropic' },
+        { id: 'claude-sonnet-4', name: 'Claude Sonnet 4 (GitHub naming)', provider: 'Anthropic' },
+        { id: 'claude-3.5-sonnet', name: 'Claude 3.5 Sonnet (GitHub naming)', provider: 'Anthropic' },
       ],
       ollama: [
         { id: process.env.OLLAMA_MODEL || 'llama3.2:1b', name: 'Llama 3.2 1B', provider: 'Ollama (local)' },

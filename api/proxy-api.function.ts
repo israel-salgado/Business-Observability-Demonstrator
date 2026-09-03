@@ -265,14 +265,28 @@ export default async function (payload: ProxyPayload) {
   // the optional "trace AI calls" mode are routed through the VM gateway.
   // ════════════════════════════════════════════════════════════════════
   type AiShape = 'openai' | 'anthropic' | 'ollama';
-  interface AiProviderDef { baseUrl: string; host: string; shape: AiShape; system: string; defaultModel: string; }
+  interface AiProviderDef {
+    baseUrl: string;
+    host: string;
+    shape: AiShape;
+    system: string;
+    defaultModel: string;
+    // Models tried, in order, if the selected one is rejected or rate-limited.
+    // Must stay within the provider's own family: falling back from Claude to
+    // gpt-4o would just 404 on api.anthropic.com.
+    fallbackModels: string[];
+    // Hard ceiling on requested output tokens. Anthropic requires max_tokens and
+    // caps output far below what the OpenAI-shaped models accept, so an
+    // unclamped 7000-token dashboard request fails outright on Claude.
+    maxOutputTokens: number;
+  }
   const AI_PROVIDERS: Record<string, AiProviderDef> = {
-    'openai':            { baseUrl: 'https://api.openai.com/v1',             host: 'api.openai.com',                shape: 'openai',    system: 'openai',            defaultModel: 'gpt-4.1' },
-    'openai-compatible': { baseUrl: '',                                      host: '',                              shape: 'openai',    system: 'openai_compatible', defaultModel: 'gpt-4.1' },
-    'azure-openai':      { baseUrl: '',                                      host: '',                              shape: 'openai',    system: 'azure_openai',      defaultModel: 'gpt-4.1' },
-    'github-models':     { baseUrl: 'https://models.inference.ai.azure.com', host: 'models.inference.ai.azure.com', shape: 'openai',    system: 'github_models',     defaultModel: 'gpt-4.1' },
-    'anthropic':         { baseUrl: 'https://api.anthropic.com',             host: 'api.anthropic.com',             shape: 'anthropic', system: 'anthropic',         defaultModel: 'claude-3-5-sonnet-latest' },
-    'ollama':            { baseUrl: '',                                      host: '',                              shape: 'ollama',    system: 'ollama',            defaultModel: 'llama3.2' },
+    'openai':            { baseUrl: 'https://api.openai.com/v1',             host: 'api.openai.com',                shape: 'openai',    system: 'openai',            defaultModel: 'gpt-4.1',                  fallbackModels: ['gpt-4o', 'gpt-4.1-mini'],                    maxOutputTokens: 16000 },
+    'openai-compatible': { baseUrl: '',                                      host: '',                              shape: 'openai',    system: 'openai_compatible', defaultModel: 'gpt-4.1',                  fallbackModels: [],                                            maxOutputTokens: 8000 },
+    'azure-openai':      { baseUrl: '',                                      host: '',                              shape: 'openai',    system: 'azure_openai',      defaultModel: 'gpt-4.1',                  fallbackModels: [],                                            maxOutputTokens: 16000 },
+    'github-models':     { baseUrl: 'https://models.inference.ai.azure.com', host: 'models.inference.ai.azure.com', shape: 'openai',    system: 'github_models',     defaultModel: 'gpt-4.1',                  fallbackModels: ['gpt-4o', 'gpt-4.1-mini'],                    maxOutputTokens: 8000 },
+    'anthropic':         { baseUrl: 'https://api.anthropic.com',             host: 'api.anthropic.com',             shape: 'anthropic', system: 'anthropic',         defaultModel: 'claude-3-5-sonnet-latest', fallbackModels: ['claude-3-5-haiku-latest'],                   maxOutputTokens: 8192 },
+    'ollama':            { baseUrl: '',                                      host: '',                              shape: 'ollama',    system: 'ollama',            defaultModel: 'llama3.2',                 fallbackModels: [],                                            maxOutputTokens: 4096 },
   };
   const AI_KEY_CREDENTIAL_NAME = 'bizobs-ai-provider-key';
   const LEGACY_GITHUB_CREDENTIAL_NAME = 'bizobs-github-pat';
@@ -360,7 +374,7 @@ export default async function (payload: ProxyPayload) {
     temperature?: number;
     maxTokens?: number;
     configOverride?: Partial<{ provider: string; model: string; baseUrl: string; routeViaVm: boolean }>;
-  }): Promise<{ success: boolean; data?: any; error?: string; code?: string; routedVia?: string }> => {
+  }): Promise<{ success: boolean; data?: any; error?: string; code?: string; routedVia?: string; details?: string }> => {
     const cfg = { ...(await loadAiConfig()), ...(args.configOverride || {}) };
     const provider = normalizeAiProvider(cfg.provider);
     const def = AI_PROVIDERS[provider];
@@ -381,58 +395,190 @@ export default async function (payload: ProxyPayload) {
     const viaVm = cfg.routeViaVm || provider === 'ollama';
 
     // VM-traced path (OTel GenAI spans; required for Ollama since the app can't reach localhost).
+    // fetchWithRetry covers transport-level retries; the VM gateway runs its own
+    // model/profile ladder (see /api/ai-generate/complete), so we deliberately do
+    // not also run the ladder here and multiply the attempts.
     if (viaVm) {
       try {
         const resp = await fetchWithRetry(`${baseUrl}/api/ai-generate/complete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'x-ai-api-key': apiKey } : {}) },
-          body: JSON.stringify({ provider, model, baseUrl: base, prompt: args.prompt, systemPrompt, temperature, maxTokens }),
+          body: JSON.stringify({
+            provider, model, baseUrl: base,
+            prompt: args.prompt, systemPrompt, temperature,
+            maxTokens: Math.min(maxTokens, def.maxOutputTokens),
+          }),
           signal: AbortSignal.timeout(240000),
         }, 2, 1500);
         const json = await resp.json().catch(() => null);
         if (resp.ok && json?.success) return { ...json, routedVia: 'vm-traced' };
-        return { success: false, error: json?.error || `VM AI gateway failed (${resp.status})`, code: json?.code || 'VM_GATEWAY_FAILED', routedVia: 'vm-traced' };
+        const vmCode = json?.code
+          || (resp.status === 401 || resp.status === 403 ? 'AUTH_FAILED' : resp.status === 429 ? 'RATE_LIMITED' : 'VM_GATEWAY_FAILED');
+        return { success: false, error: json?.error || `VM AI gateway failed (${resp.status})`, code: vmCode, routedVia: 'vm-traced' };
       } catch (e: any) {
-        return { success: false, error: e?.message || 'VM AI gateway unreachable', code: 'VM_UNREACHABLE', routedVia: 'vm-traced' };
+        const msg = String(e?.message || 'VM AI gateway unreachable');
+        const timedOut = /timed out|timeout|abort|signal/i.test(msg);
+        return { success: false, error: msg, code: timedOut ? 'GEN_TIMEOUT' : 'VM_UNREACHABLE', routedVia: 'vm-traced' };
       }
     }
 
     // Direct call from the app function — make sure the provider host is allowlisted first.
     await ensureOutboundHost(def.host || hostOf(base));
-    const started = Date.now();
-    try {
-      if (def.shape === 'anthropic') {
-        const resp = await fetch(`${base}/v1/messages`, {
+
+    // ── One attempt against one model with one token/timeout profile ──
+    type AttemptOutcome =
+      | { ok: true; data: any }
+      | { ok: false; status: number; message: string; timedOut: boolean };
+
+    const attempt = async (attemptModel: string, attemptMaxTokens: number, timeoutMs: number): Promise<AttemptOutcome> => {
+      const started = Date.now();
+      try {
+        if (def.shape === 'anthropic') {
+          const resp = await fetch(`${base}/v1/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+            body: JSON.stringify({ model: attemptModel, system: systemPrompt, messages: [{ role: 'user', content: args.prompt }], temperature, max_tokens: attemptMaxTokens }),
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+          const json = await resp.json().catch(() => null);
+          if (!resp.ok) {
+            return { ok: false, status: resp.status, message: `Anthropic error (${resp.status}): ${json ? JSON.stringify(json).slice(0, 300) : resp.status}`, timedOut: false };
+          }
+          const content = (json?.content || []).filter((b: any) => b?.type === 'text').map((b: any) => b.text).join('');
+          const usage = json?.usage || {};
+          return {
+            ok: true,
+            data: { content, model: json?.model || attemptModel, usage, genai: { system: def.system, model: json?.model || attemptModel, promptTokens: usage.input_tokens || 0, completionTokens: usage.output_tokens || 0, durationMs: Date.now() - started, finishReason: json?.stop_reason || 'stop' } },
+          };
+        }
+        // OpenAI-compatible (OpenAI, Azure OpenAI, GitHub Models, OpenRouter, etc.)
+        const resp = await fetch(`${base}/chat/completions`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-          body: JSON.stringify({ model, system: systemPrompt, messages: [{ role: 'user', content: args.prompt }], temperature, max_tokens: maxTokens }),
-          signal: AbortSignal.timeout(120000),
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+          body: JSON.stringify({ model: attemptModel, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: args.prompt }], temperature, max_tokens: attemptMaxTokens }),
+          signal: AbortSignal.timeout(timeoutMs),
         });
         const json = await resp.json().catch(() => null);
         if (!resp.ok) {
-          return { success: false, error: `Anthropic error (${resp.status}): ${json ? JSON.stringify(json).slice(0, 300) : resp.status}`, code: resp.status === 401 ? 'AUTH_FAILED' : resp.status === 429 ? 'RATE_LIMITED' : 'PROVIDER_FAILED', routedVia: 'direct' };
+          return { ok: false, status: resp.status, message: `${def.system} error (${resp.status}): ${json ? JSON.stringify(json).slice(0, 300) : resp.status}`, timedOut: false };
         }
-        const content = (json?.content || []).filter((b: any) => b?.type === 'text').map((b: any) => b.text).join('');
+        const content = json?.choices?.[0]?.message?.content || '';
         const usage = json?.usage || {};
-        return { success: true, data: { content, model: json?.model || model, usage, genai: { system: 'anthropic', model, promptTokens: usage.input_tokens || 0, completionTokens: usage.output_tokens || 0, durationMs: Date.now() - started, finishReason: json?.stop_reason || 'stop' } }, routedVia: 'direct' };
+        return {
+          ok: true,
+          data: { content, model: json?.model || attemptModel, usage, genai: { system: def.system, model: json?.model || attemptModel, promptTokens: usage.prompt_tokens || 0, completionTokens: usage.completion_tokens || 0, durationMs: Date.now() - started, finishReason: json?.choices?.[0]?.finish_reason || 'stop' } },
+        };
+      } catch (e: any) {
+        const msg = String(e?.message || 'AI request failed');
+        const timedOut = /timed out|timeout|abort|signal/i.test(msg);
+        return { ok: false, status: 0, message: msg, timedOut };
       }
-      // OpenAI-compatible (OpenAI, Azure OpenAI, GitHub Models, OpenRouter, etc.)
-      const resp = await fetch(`${base}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-        body: JSON.stringify({ model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: args.prompt }], temperature, max_tokens: maxTokens }),
-        signal: AbortSignal.timeout(120000),
-      });
-      const json = await resp.json().catch(() => null);
-      if (!resp.ok) {
-        return { success: false, error: `${def.system} error (${resp.status}): ${json ? JSON.stringify(json).slice(0, 300) : resp.status}`, code: resp.status === 401 ? 'AUTH_FAILED' : resp.status === 429 ? 'RATE_LIMITED' : 'PROVIDER_FAILED', routedVia: 'direct' };
+    };
+
+    // ── Retry ladder: models x profiles, with a wall-clock budget ──
+    // Ordered so the chosen model gets both profiles before we swap models.
+    // Clamped to the provider's output ceiling so a 7000-token dashboard
+    // request doesn't get rejected outright by Claude.
+    const primaryMaxTokens = Math.min(maxTokens, def.maxOutputTokens);
+    const profiles = [
+      { maxTokens: primaryMaxTokens, timeoutMs: 120000, label: 'primary' },
+      { maxTokens: Math.max(700, Math.floor(primaryMaxTokens * 0.6)), timeoutMs: 60000, label: 'compact' },
+    ];
+    const modelChain = Array.from(new Set([model, ...def.fallbackModels]));
+
+    // AppEngine functions have a finite execution window; stop starting new
+    // attempts once we're close so we return a useful error instead of being killed.
+    const ladderStarted = Date.now();
+    const TOTAL_BUDGET_MS = 240000;
+    const budgetLeft = () => TOTAL_BUDGET_MS - (Date.now() - ladderStarted);
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    let lastMessage = 'AI generation failed';
+    let lastStatus = 0;
+    let sawTimeout = false;
+    let sawRateLimit = false;
+
+    for (let m = 0; m < modelChain.length; m++) {
+      const candidate = modelChain[m]!;
+      for (let p = 0; p < profiles.length; p++) {
+        const profile = profiles[p]!;
+        if (budgetLeft() < 15000) {
+          return {
+            success: false,
+            error: sawTimeout || sawRateLimit
+              ? 'AI generation ran out of time after retries. Try again, or shorten the requirements/context.'
+              : `${lastMessage}. Ran out of time before completing.`,
+            code: 'GEN_TIMEOUT',
+            routedVia: 'direct',
+          };
+        }
+
+        const out = await attempt(candidate, profile.maxTokens, Math.min(profile.timeoutMs, Math.max(15000, budgetLeft() - 5000)));
+
+        if (out.ok) {
+          if (candidate !== model) {
+            console.log(`[proxy-api] AI fallback succeeded on ${candidate} (requested ${model}, profile ${profile.label})`);
+          }
+          return { success: true, data: out.data, routedVia: 'direct' };
+        }
+
+        lastMessage = out.message;
+        lastStatus = out.status;
+
+        // Auth problems will never recover by retrying or swapping models.
+        if (out.status === 401 || out.status === 403) {
+          return {
+            success: false,
+            error: `${out.message}. Check the key in Settings → AI Provider.`,
+            code: 'AUTH_FAILED',
+            routedVia: 'direct',
+          };
+        }
+
+        // Rate limited: back off, retry the compact profile, then move on to the next model.
+        if (out.status === 429) {
+          sawRateLimit = true;
+          const hasAnotherProfile = p < profiles.length - 1;
+          if (hasAnotherProfile) {
+            const waitMs = Math.min(8000, 1500 * (p + 1));
+            console.warn(`[proxy-api] ${candidate} rate-limited, retrying compact in ${waitMs}ms`);
+            if (budgetLeft() > waitMs + 20000) { await sleep(waitMs); continue; }
+          }
+          console.warn(`[proxy-api] ${candidate} exhausted by rate limit, trying next model`);
+          break;
+        }
+
+        // Model rejected (unknown name, bad request, unsupported params): next model.
+        if (out.status === 400 || out.status === 404 || out.status === 422) {
+          console.warn(`[proxy-api] ${candidate} rejected (${out.status}), trying next model`);
+          break;
+        }
+
+        // Server-side or timeout: retry the same model compact, then next model.
+        if (out.timedOut || out.status >= 500 || out.status === 0) {
+          if (out.timedOut) sawTimeout = true;
+          if (p < profiles.length - 1) {
+            console.warn(`[proxy-api] ${candidate} ${profile.label} failed (${out.timedOut ? 'timeout' : out.status}), retrying compact`);
+            continue;
+          }
+          break;
+        }
+
+        // Anything else is not obviously retryable.
+        break;
       }
-      const content = json?.choices?.[0]?.message?.content || '';
-      const usage = json?.usage || {};
-      return { success: true, data: { content, model: json?.model || model, usage, genai: { system: def.system, model, promptTokens: usage.prompt_tokens || 0, completionTokens: usage.completion_tokens || 0, durationMs: Date.now() - started, finishReason: json?.choices?.[0]?.finish_reason || 'stop' } }, routedVia: 'direct' };
-    } catch (e: any) {
-      return { success: false, error: e?.message || 'AI generation failed', code: 'PROVIDER_FAILED', routedVia: 'direct' };
     }
+
+    const exhaustedCode = sawTimeout ? 'GEN_TIMEOUT' : sawRateLimit ? 'RATE_LIMITED' : 'PROVIDER_FAILED';
+    return {
+      success: false,
+      error: modelChain.length > 1
+        ? `${lastMessage} (tried: ${modelChain.join(', ')})`
+        : lastMessage,
+      code: exhaustedCode,
+      routedVia: 'direct',
+      ...(lastStatus ? { details: `Last HTTP status ${lastStatus}` } : {}),
+    };
   };
 
   // Deploy dashboard via Documents SDK so ownership is the active AppEngine principal.
