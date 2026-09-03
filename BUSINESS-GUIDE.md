@@ -182,4 +182,4 @@ The partner event materials are designed to show the value of business observabi
 
 ---
 
-*[Technical Guide](TECHNICAL-GUIDE.md) · [GitHub Repository](https://github.com/LawrenceBarratt90/Business-Observability-Demonstrator)*
+*[Technical Guide](TECHNICAL-GUIDE.md) · [GitHub Repository](https://github.com/israel-salgado/Business-Observability-Demonstrator)*

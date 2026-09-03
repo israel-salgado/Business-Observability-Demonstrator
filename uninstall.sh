@@ -15,7 +15,7 @@
 #
 #  To reinstall after uninstall:
 #    cd /home/ec2-user
-#    git clone https://github.com/LawrenceBarratt90/Business-Observability-Demonstrator.git
+#    git clone https://github.com/israel-salgado/Business-Observability-Demonstrator.git
 #    cd Dynatrace-Business-Observability-Forge && ./setup.sh
 # ============================================================
 
@@ -154,7 +154,7 @@ echo -e "╚══════════════════════�
 echo ""
 echo -e "  ${BOLD}To reinstall:${NC}"
 echo -e "    cd /home/ec2-user"
-echo -e "    git clone https://github.com/LawrenceBarratt90/Business-Observability-Demonstrator.git"
+echo -e "    git clone https://github.com/israel-salgado/Business-Observability-Demonstrator.git"
 echo -e "    cd Dynatrace-Business-Observability-Forge"
 echo -e "    ./setup.sh"
 echo ""

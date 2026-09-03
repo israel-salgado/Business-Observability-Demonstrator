@@ -1,7 +1,7 @@
 # Dynatrace Business Observability Demonstrator
 
 <p align="center">
-  <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=https://github.com/LawrenceBarratt90/Business-Observability-Demonstrator" alt="QR code linking to the Business Observability Demonstrator repository on GitHub" />
+  <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=https://github.com/israel-salgado/Business-Observability-Demonstrator" alt="QR code linking to the Business Observability Demonstrator repository on GitHub" />
 </p>
 
 Model any customer’s real business journey — their exact checkout flow, claims process, or patient care pathway — and turn it into a live, fully instrumented simulation inside Dynatrace. Describe the journey in plain language (or use AI to research it), and the Demonstrator generates real microservices, realistic traffic, business events with revenue metadata, and executive dashboards — all wired into Dynatrace OneAgent, BizEvents, and Dynatrace Intelligence.
@@ -46,7 +46,7 @@ Model any customer’s real business journey — their exact checkout flow, clai
 ### One Command
 
 ```bash
-git clone https://github.com/LawrenceBarratt90/Business-Observability-Demonstrator.git && cd Dynatrace-Business-Outcome-Engine && chmod +x setup.sh && ./setup.sh
+git clone https://github.com/israel-salgado/Business-Observability-Demonstrator.git && cd Business-Observability-Demonstrator && chmod +x setup.sh && ./setup.sh
 ```
 
 The script walks you through 7 guided prompts (environment type, tenant ID, API token, DT platform token for dtctl, EdgeConnect OAuth, and deploy OAuth), then automatically:
@@ -69,8 +69,8 @@ The script walks you through 7 guided prompts (environment type, tenant ID, API 
 ### Phase 1 — Pull
 
 ```bash
-git clone https://github.com/LawrenceBarratt90/Business-Observability-Demonstrator.git
-cd Dynatrace-Business-Outcome-Engine
+git clone https://github.com/israel-salgado/Business-Observability-Demonstrator.git
+cd Business-Observability-Demonstrator
 chmod +x setup.sh
 ./setup.sh
 ```

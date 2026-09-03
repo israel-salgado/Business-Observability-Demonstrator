@@ -3,7 +3,7 @@
 #  Business Observability Demonstrator — One-Command Setup
 # ============================================================
 #  Usage:
-#    git clone https://github.com/LawrenceBarratt90/Business-Observability-Demonstrator.git
+#    git clone https://github.com/israel-salgado/Business-Observability-Demonstrator.git
 #    cd Dynatrace-Business-Outcome-Engine && ./setup.sh
 #
 #  The script will prompt you for values if setup.conf doesn't exist.

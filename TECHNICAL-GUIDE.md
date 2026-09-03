@@ -144,7 +144,7 @@ Step 6: Configure from Demonstrator UI    ← Wire everything together (private 
 This is a **single unified repo** — it contains both the Demonstrator (server) and the Demonstrator UI (AppEngine app).
 
 ```bash
-sudo git clone https://github.com/LawrenceBarratt90/Business-Observability-Demonstrator.git
+sudo git clone https://github.com/israel-salgado/Business-Observability-Demonstrator.git
 cd Business-Observability-Demonstrator
 sudo chmod +x setup.sh
 sudo ./setup.sh
@@ -646,7 +646,7 @@ After uninstalling, clone and run setup:
 
 ```bash
 cd /home/ec2-user
-sudo git clone https://github.com/LawrenceBarratt90/Business-Observability-Demonstrator.git
+sudo git clone https://github.com/israel-salgado/Business-Observability-Demonstrator.git
 cd Business-Observability-Demonstrator
 sudo ./setup.sh
 ```

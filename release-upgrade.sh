@@ -6,14 +6,14 @@
 #  Usage:
 #    bash release-upgrade.sh
 #    Or on another server:
-#    curl -fsSL https://raw.githubusercontent.com/LawrenceBarratt90/Business-Observability-Demonstrator/main/release-upgrade.sh | bash
+#    curl -fsSL https://raw.githubusercontent.com/israel-salgado/Business-Observability-Demonstrator/main/release-upgrade.sh | bash
 #
 # ============================================================
 
 set -e
 
 TARGET_DIR="/home/Business-Observability-Demonstrator"
-REPO_URL="https://github.com/LawrenceBarratt90/Business-Observability-Demonstrator.git"
+REPO_URL="https://github.com/israel-salgado/Business-Observability-Demonstrator.git"
 
 # Colors
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'

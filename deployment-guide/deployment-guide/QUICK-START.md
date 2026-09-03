@@ -108,7 +108,7 @@ The app will still work without Ollama — it falls back to rule-based logic ins
 
 ```bash
 cd /home/ec2-user
-git clone https://github.com/LawrenceBarratt90/Business-Observability-Demonstrator.git
+git clone https://github.com/israel-salgado/Business-Observability-Demonstrator.git
 cd Business-Observability-Demonstrator
 ```
 

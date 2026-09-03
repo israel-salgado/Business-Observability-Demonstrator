@@ -18,7 +18,7 @@
 #
 #  USAGE:
 #    # Option A: SSH in and run interactively (prompts for DT creds)
-#    curl -fsSL https://raw.githubusercontent.com/LawrenceBarratt90/Dynatrace-Business-Outcome-Engine/main/bootstrap-ec2.sh | bash
+#    curl -fsSL https://raw.githubusercontent.com/israel-salgado/Business-Observability-Demonstrator/main/bootstrap-ec2.sh | bash
 #
 #    # Option B: Pass all credentials via CLI flags (CI/CD, no prompts)
 #    bash bootstrap-ec2.sh \
@@ -73,8 +73,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-REPO_URL="https://github.com/LawrenceBarratt90/Business-Observability-Demonstrator.git"
-INSTALL_DIR="/home/ec2-user/Dynatrace-Business-Outcome-Engine"
+REPO_URL="https://github.com/israel-salgado/Business-Observability-Demonstrator.git"
+INSTALL_DIR="/home/ec2-user/Business-Observability-Demonstrator"
 
 echo -e "${BOLD}"
 echo "╔══════════════════════════════════════════════════════════════╗"

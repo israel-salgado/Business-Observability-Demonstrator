@@ -76,6 +76,9 @@ dtctl query <dql-statement> --output json
 
 ### 3. dynatrace-for-ai Skills (Supporting)
 
+**Source:** [https://github.com/Dynatrace/dynatrace-for-ai](https://github.com/Dynatrace/dynatrace-for-ai) (official public Dynatrace skills, Apache-2.0)  
+**Install:** `npx skills add dynatrace/dynatrace-for-ai`
+
 **Available Skills:**
 - `dt-dql-essentials` — DQL syntax validation & optimization
 - `dt-app-dashboards` — Dashboard pattern recommendations

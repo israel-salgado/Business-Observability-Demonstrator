@@ -75,3 +75,6 @@ tmp/
 
 # EdgeConnect credentials (contains OAuth secrets)
 edgeconnect/edgeConnect.yaml
+
+# Personal AI project notes (local only, not part of the core app)
+PROJECT-MEMORY.md
