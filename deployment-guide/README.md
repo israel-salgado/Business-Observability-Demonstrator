@@ -98,30 +98,38 @@ OLLAMA_MODE=disabled
 
 ### Minimum Requirements
 
-| Resource | Minimum | Recommended |
+> **Assumed starting state:** a Linux host that is **already running** and reachable by SSH. This
+> is not a provisioning tool. See the canonical host contract in
+> [TECHNICAL-GUIDE.md](../TECHNICAL-GUIDE.md#the-host-contract-assumed-starting-state); the table
+> below must stay in sync with it.
+
+| Resource | Default (cloud AI provider) | With local Ollama |
 |---|---|---|
 | **vCPUs** | 2 | 4 |
 | **RAM** | 4 GB | 8 GB (Ollama loads the LLM into memory) |
-| **Disk** | 15 GB | 30 GB (model files + node_modules + logs) |
-| **OS** | Ubuntu 20.04+ / Amazon Linux 2023 / RHEL 8+ | Amazon Linux 2023 |
-| **Node.js** | 18.x | 20.x or 22.x |
-| **Docker** | 20.10+ (for EdgeConnect) | Latest |
+| **Disk** | 20 GB | 40 GB (model files + node_modules + logs) |
+| **OS** | Any Linux with systemd + `dnf`/`yum`/`apt`. Verified on Ubuntu 22.04+, Debian 12+, Amazon Linux 2023. RHEL/Rocky/Alma need the Docker CE repo added first | same |
+| **Node.js** | **22.x** (installed automatically; 22 is a hard floor) | same |
+| **Docker** | 20.10+ (for EdgeConnect) | same |
 
-### Recommended Cloud Instance Sizes
+### Sizing Examples
 
-| Cloud | Instance Type | vCPUs | RAM | Cost (approx.) |
+Any of these work. The host just needs to be running before you start.
+
+| Where | Example | vCPUs | RAM | Notes |
 |---|---|---|---|---|
-| **AWS** | `t3.large` | 2 | 8 GB | ~$0.08/hr |
-| **AWS** (budget) | `t3.medium` | 2 | 4 GB | ~$0.04/hr |
-| **AWS** (performance) | `t3.xlarge` | 4 | 16 GB | ~$0.17/hr |
+| **Hypervisor** (Proxmox, vSphere, Hyper-V, UTM) | Ubuntu 22.04 VM | 2 | 4 GB | Default profile. No inbound rules to configure |
+| **Hypervisor** with local Ollama | Ubuntu 22.04 VM | 4 | 8 GB | Add 20 GB disk for model files |
+| **AWS** | `t3.medium` | 2 | 4 GB | ~$0.04/hr |
+| **AWS** with local Ollama | `t3.large` | 2 | 8 GB | ~$0.08/hr |
 | **Azure** | `Standard_B2s` | 2 | 4 GB | ~$0.04/hr |
-| **Azure** (recommended) | `Standard_B2ms` | 2 | 8 GB | ~$0.08/hr |
-| **Azure** (performance) | `Standard_D4s_v5` | 4 | 16 GB | ~$0.19/hr |
+| **Azure** with local Ollama | `Standard_B2ms` | 2 | 8 GB | ~$0.08/hr |
 | **GCP** | `e2-medium` | 2 | 4 GB | ~$0.03/hr |
-| **GCP** (recommended) | `e2-standard-2` | 2 | 8 GB | ~$0.07/hr |
-| **GCP** (performance) | `e2-standard-4` | 4 | 16 GB | ~$0.13/hr |
+| **GCP** with local Ollama | `e2-standard-2` | 2 | 8 GB | ~$0.07/hr |
 
-> **Why 8 GB RAM?** The Ollama `llama3.2` model uses ~2 GB of RAM at runtime, plus Node.js needs ~500 MB, plus headroom for service runners. With 4 GB it works but you may see slower LLM responses or OOM on large prompts.
+> **Why does Ollama double the RAM?** The `llama3.2:1b` model uses ~2 GB at runtime, on top of
+> ~1.4 GB for the main server and its child services. With 4 GB and Ollama you'll see slow
+> responses or OOM on large prompts. Using a cloud AI provider instead keeps you at 4 GB.
 
 ### Network & Ports
 
@@ -179,7 +187,7 @@ bash deploy.sh \
 
 | Step | Action |
 |---|---|
-| 1 | Installs Node.js 20 (if missing) |
+| 1 | Installs Node.js 22 (if missing or older) |
 | 2 | Installs Ollama + pulls the LLM model (skipped with `--skip-ollama`) |
 | 3 | Clones the repo (or detects existing code) |
 | 4 | `npm install` + TypeScript build |
@@ -198,12 +206,12 @@ If you prefer to do it step by step, keep reading.
 ## Step 1 — Install Node.js
 
 ```bash
-# Amazon Linux / RHEL
-curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
-sudo yum install -y nodejs
+# Amazon Linux / RHEL / Rocky / Alma
+curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash -
+sudo dnf install -y nodejs   # or: sudo yum install -y nodejs
 
 # Ubuntu / Debian
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
 # Verify

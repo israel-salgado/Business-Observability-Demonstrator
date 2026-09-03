@@ -48,8 +48,15 @@ const PROMPTS_PATH = path.join(__dirname, '../prompts');
 const OLLAMA_ENDPOINT = process.env.OLLAMA_ENDPOINT || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2:1b';
 
-// Respect OLLAMA_MODE — when 'disabled', skip all LLM calls and use templates only
-const OLLAMA_DISABLED = (process.env.OLLAMA_MODE || global.ollamaMode || 'full').toLowerCase() === 'disabled';
+// Respect OLLAMA_MODE — when 'disabled', never call Ollama and use templates only.
+// Read lazily rather than at import time, because this module's static import is
+// evaluated before server.js gets to set global.ollamaMode.
+// Anything other than 'disabled' ('auto', the default, or 'full') means "try it",
+// and checkOllamaAvailable() below decides based on a real probe. That way a host
+// without Ollama degrades to templates instead of erroring on every AI call.
+function isOllamaHardDisabled() {
+  return String(process.env.OLLAMA_MODE || global.ollamaMode || 'auto').toLowerCase() === 'disabled';
+}
 
 let promptTemplates = null;
 
@@ -1261,15 +1268,22 @@ async function loadPromptTemplates() {
 }
 
 async function checkOllamaAvailable() {
-  if (OLLAMA_DISABLED) return false;
+  if (isOllamaHardDisabled()) {
+    global.ollamaAvailable = false;
+    return false;
+  }
   try {
-    const response = await fetch(`${OLLAMA_ENDPOINT}/api/tags`);
+    const response = await fetch(`${OLLAMA_ENDPOINT}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    let available = false;
     if (response.ok) {
       const data = await response.json();
-      return data.models?.some(m => m.name.includes(OLLAMA_MODEL.split(':')[0]));
+      available = Boolean(data.models?.some(m => m.name.includes(OLLAMA_MODEL.split(':')[0])));
     }
-    return false;
+    // Record the result so 'auto' converges to a known state for anything that asks.
+    global.ollamaAvailable = available;
+    return available;
   } catch (error) {
+    global.ollamaAvailable = false;
     return false;
   }
 }
@@ -1321,8 +1335,8 @@ async function warmupOllama() {
 
 // Schedule Ollama warmup every 8 minutes to keep model loaded
 function scheduleOllamaWarmup() {
-  if (OLLAMA_DISABLED) {
-    console.log('[Ollama Warmup] ⏭️  OLLAMA_MODE=disabled — skipping warmup scheduler');
+  if (isOllamaHardDisabled()) {
+    console.log('[Ollama Warmup] ⏭️  OLLAMA_MODE=disabled, skipping warmup scheduler');
     return;
   }
   console.log('[Ollama Warmup] 📅 Scheduling periodic warmup (every 8 minutes)');

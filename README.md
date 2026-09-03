@@ -32,8 +32,31 @@ Model any customer’s real business journey — their exact checkout flow, clai
 
 ### Prerequisites
 
-- **Dynatrace NFR tenant** 
-- **Node.js v22+** and **Docker** on your host (EC2/VM)
+#### What you bring: one running Linux host
+
+This is not a cloud provisioning tool. It assumes you **already have a Linux machine running**
+that you can SSH into. Where it runs makes no difference: EC2, Azure, GCP, Proxmox, vSphere, a
+laptop VM, a bare-metal box, or a Codespace all work identically.
+
+| | Requirement |
+|---|---|
+| **OS** | Any Linux with `systemd` and one of `dnf`, `yum`, or `apt`. Verified on **Ubuntu 22.04+**, **Debian 12+**, and **Amazon Linux 2023**. RHEL / Rocky / AlmaLinux work, but add the Docker CE repo first (`setup.sh` prints the exact commands if it hits this). |
+| **Arch** | x86_64 or arm64 |
+| **Size** | **2 vCPU / 4 GB RAM / 20 GB disk** is enough by default. Only go to **4 vCPU / 8 GB / 40 GB** if you want local Ollama models. |
+| **Access** | SSH plus `sudo`. Passwordless `sudo` is preferred: without it the systemd service install is skipped and the server runs under `nohup` instead. |
+| **Network** | Outbound HTTPS (443) to your Dynatrace tenant. **No inbound ports, no public IP, and no port forwarding** are needed, because EdgeConnect makes an outbound tunnel. |
+
+**`setup.sh` installs everything else for you:** Node.js 22, Docker, npm packages, the EdgeConnect
+container, the Demonstrator UI, and the systemd service.
+
+**Not installed, and not required:** OneAgent (optional, adds host and process instrumentation)
+and Ollama (optional, only for local-model demos). `setup.sh` detects whether Ollama is running
+and records the result, so AI features fall back to templates cleanly when it's absent. For AI
+generation, configure any cloud provider in the app under **Settings → AI Provider**.
+
+#### Dynatrace side
+
+- **Dynatrace NFR tenant** (SaaS or Managed 1.275+, AppEngine requires a DPS licence)
 - **4 Dynatrace credentials** (see [TECHNICAL-GUIDE.md](TECHNICAL-GUIDE.md#step-2-create-dynatrace-credentials) for how to create them):
 
 | Credential | Type | Where To Create |

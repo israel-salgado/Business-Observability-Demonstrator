@@ -10,7 +10,7 @@
 #                   --otel-token dt0c01.YYY
 #
 #  This script handles everything:
-#    1. Installs Node.js 20 (if missing)
+#    1. Installs Node.js 22 (if missing or older)
 #    2. Installs Ollama + pulls the LLM model
 #    3. Clones the app repo (if not already cloned)
 #    4. Runs npm install + TypeScript build
@@ -113,22 +113,23 @@ echo -e "${NC}"
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 step 1 "Node.js"
 
+# Node.js 22 is the floor — must match the version enforced by setup.sh
 if command -v node &>/dev/null; then
   NODE_VER=$(node --version | sed 's/v//' | cut -d. -f1)
-  if [[ "$NODE_VER" -ge 18 ]]; then
+  if [[ "$NODE_VER" -ge 22 ]]; then
     ok "Node.js $(node --version) already installed"
   else
-    warn "Node.js $(node --version) is too old (need 18+), installing v20..."
-    curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - 2>/dev/null \
-      || curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - 2>/dev/null
-    sudo yum install -y nodejs 2>/dev/null || sudo apt-get install -y nodejs 2>/dev/null
+    warn "Node.js $(node --version) is below the required v22, installing v22..."
+    curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash - 2>/dev/null \
+      || curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - 2>/dev/null
+    sudo dnf install -y nodejs 2>/dev/null || sudo yum install -y nodejs 2>/dev/null || sudo apt-get install -y nodejs 2>/dev/null
     ok "Node.js $(node --version) installed"
   fi
 else
-  echo "  Installing Node.js 20..."
-  curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - 2>/dev/null \
-    || curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - 2>/dev/null
-  sudo yum install -y nodejs 2>/dev/null || sudo apt-get install -y nodejs 2>/dev/null
+  echo "  Installing Node.js 22..."
+  curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash - 2>/dev/null \
+    || curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - 2>/dev/null
+  sudo dnf install -y nodejs 2>/dev/null || sudo yum install -y nodejs 2>/dev/null || sudo apt-get install -y nodejs 2>/dev/null
   ok "Node.js $(node --version) installed"
 fi
 

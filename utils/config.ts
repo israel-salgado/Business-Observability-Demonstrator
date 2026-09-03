@@ -56,7 +56,9 @@ export const config: AgentConfig = {
     model: env('OLLAMA_MODEL', 'llama3.2:1b'),
     timeoutMs: envInt('OLLAMA_TIMEOUT_MS', 180_000),
     maxRetries: envInt('OLLAMA_MAX_RETRIES', 1),
-    disabled: env('OLLAMA_MODE', 'full').toLowerCase() === 'disabled',
+    // Only an explicit 'disabled' turns Ollama off. 'auto' (the default) and 'full'
+    // both mean "try it", and isOllamaAvailable() decides via a live probe.
+    disabled: env('OLLAMA_MODE', 'auto').toLowerCase() === 'disabled',
   },
   dynatrace: {
     environmentUrl: env('DT_ENVIRONMENT_URL', ''),

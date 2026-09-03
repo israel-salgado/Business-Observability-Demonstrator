@@ -144,22 +144,23 @@ fi
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 step 1 "Node.js"
 
+# Node.js 22 is the floor — must match the version enforced by setup.sh
 if command -v node &>/dev/null; then
   NODE_VER=$(node --version | sed 's/v//' | cut -d. -f1)
-  if [[ "$NODE_VER" -ge 18 ]]; then
+  if [[ "$NODE_VER" -ge 22 ]]; then
     ok "Node.js $(node --version) already installed"
   else
-    warn "Node.js $(node --version) is too old (need 18+), installing v20..."
-    curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - 2>/dev/null \
-      || curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - 2>/dev/null
-    sudo yum install -y nodejs 2>/dev/null || sudo apt-get install -y nodejs 2>/dev/null
+    warn "Node.js $(node --version) is below the required v22, installing v22..."
+    curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash - 2>/dev/null \
+      || curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - 2>/dev/null
+    sudo dnf install -y nodejs 2>/dev/null || sudo yum install -y nodejs 2>/dev/null || sudo apt-get install -y nodejs 2>/dev/null
     ok "Node.js $(node --version) installed"
   fi
 else
-  echo "  Installing Node.js 20..."
-  curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - 2>/dev/null \
-    || curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - 2>/dev/null
-  sudo yum install -y nodejs 2>/dev/null || sudo apt-get install -y nodejs 2>/dev/null
+  echo "  Installing Node.js 22..."
+  curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash - 2>/dev/null \
+    || curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - 2>/dev/null
+  sudo dnf install -y nodejs 2>/dev/null || sudo yum install -y nodejs 2>/dev/null || sudo apt-get install -y nodejs 2>/dev/null
   ok "Node.js $(node --version) installed"
 fi
 
@@ -181,28 +182,43 @@ ok "Build complete — dist/ folder ready"
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 step 3 "Dynatrace configuration"
 
+# Detect whether a local Ollama is actually running. This script does NOT install
+# Ollama, so pinning OLLAMA_MODE=full unconditionally used to leave the app calling
+# a dead localhost:11434. Record what's really there instead.
+if curl -sf --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+  DETECTED_OLLAMA_MODE="full"
+else
+  DETECTED_OLLAMA_MODE="disabled"
+fi
+
 # Create .env if missing
 if [[ ! -f .env ]]; then
   cat > .env << ENVEOF
 PORT=8080
 NODE_ENV=production
-OLLAMA_MODE=full
+OLLAMA_MODE=$DETECTED_OLLAMA_MODE
 OLLAMA_MODEL=llama3.2:1b
 ENVEOF
-  ok "Created .env"
+  ok "Created .env (OLLAMA_MODE=$DETECTED_OLLAMA_MODE)"
 else
-  # Ensure OLLAMA_MODE is set (default to full for AI agent observability)
+  # Respect an existing explicit choice; otherwise record what we detected.
   if grep -q "OLLAMA_MODE" .env; then
     ok ".env already exists (OLLAMA_MODE=$(grep OLLAMA_MODE .env | cut -d= -f2))"
   else
-    echo "OLLAMA_MODE=full" >> .env
-    ok ".env updated with OLLAMA_MODE=full"
+    echo "OLLAMA_MODE=$DETECTED_OLLAMA_MODE" >> .env
+    ok ".env updated with OLLAMA_MODE=$DETECTED_OLLAMA_MODE"
   fi
   # Ensure OLLAMA_MODEL is set (default to 1B for CPU-only inference)
   if ! grep -q "OLLAMA_MODEL" .env; then
     echo "OLLAMA_MODEL=llama3.2:1b" >> .env
     ok ".env updated with OLLAMA_MODEL=llama3.2:1b"
   fi
+fi
+
+if [[ "$DETECTED_OLLAMA_MODE" == "disabled" ]]; then
+  warn "No local Ollama detected — AI features will use template fallbacks."
+  warn "Configure a cloud AI provider in the app (Settings → AI Provider), or install Ollama:"
+  warn "  curl -fsSL https://ollama.com/install.sh | sh && ollama pull llama3.2:1b"
 fi
 
 # Prompt for DT credentials if not provided

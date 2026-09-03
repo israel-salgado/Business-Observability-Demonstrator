@@ -333,6 +333,20 @@ upsert_env_var "DT_ACCOUNT_OAUTH_CLIENT_SECRET" "$DT_ACCOUNT_OAUTH_CLIENT_SECRET
 upsert_env_var "DT_ACCOUNT_RESOURCE" "$DT_ACCOUNT_RESOURCE"
 upsert_env_var "DT_ACCOUNT_TOKEN_URL" "$DT_ACCOUNT_TOKEN_URL"
 
+# Record the local-LLM mode explicitly so the runtime never has to guess.
+# setup.sh does not install Ollama: local models are opt-in. If Ollama is already
+# running we use it; otherwise we pin 'disabled' so AI features fall back to
+# templates cleanly instead of erroring against a dead localhost:11434.
+# Cloud AI providers are configured in the app (Settings → AI Provider) and are
+# unaffected by this value.
+if curl -sf --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+  upsert_env_var "OLLAMA_MODE" "full"
+  ok "Ollama detected on localhost:11434 (OLLAMA_MODE=full)"
+else
+  upsert_env_var "OLLAMA_MODE" "disabled"
+  ok "No local Ollama (OLLAMA_MODE=disabled) — configure a cloud AI provider in the app, or install Ollama later"
+fi
+
 # ── Step 1: Prerequisites ──────────────────────────────────
 step "Step 1/6: Checking prerequisites"
 
@@ -417,17 +431,47 @@ ok "Node.js $(node --version)"
 
 if ! command -v docker &>/dev/null; then
   echo "  Installing Docker..."
-  sudo yum install -y docker 2>/dev/null || sudo apt-get install -y docker.io 2>/dev/null
-  sudo systemctl start docker
-  sudo systemctl enable docker
-  sudo usermod -aG docker "$(whoami)"
+  # Amazon Linux 2023 and Fedora ship a usable 'docker' package via dnf.
+  # Debian/Ubuntu use docker.io. RHEL/Rocky/Alma ship Podman instead and need
+  # the Docker CE repo, so we detect that and tell the user exactly what to run.
+  DOCKER_OK=false
+  if command -v dnf &>/dev/null; then
+    sudo dnf install -y docker 2>/dev/null && DOCKER_OK=true
+  fi
+  if [ "$DOCKER_OK" = false ] && command -v yum &>/dev/null; then
+    sudo yum install -y docker 2>/dev/null && DOCKER_OK=true
+  fi
+  if [ "$DOCKER_OK" = false ] && command -v apt-get &>/dev/null; then
+    sudo apt-get update -qq 2>/dev/null || true
+    sudo apt-get install -y docker.io 2>/dev/null && DOCKER_OK=true
+  fi
+
+  if [ "$DOCKER_OK" = false ] || ! command -v docker &>/dev/null; then
+    echo ""
+    warn "Could not install Docker from this distro's default repositories."
+    echo "  Docker is required to run the EdgeConnect tunnel container."
+    echo ""
+    echo "  On RHEL / Rocky / AlmaLinux, add the Docker CE repo first:"
+    echo "    sudo dnf -y install dnf-plugins-core"
+    echo "    sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo"
+    echo "    sudo dnf -y install docker-ce docker-ce-cli containerd.io"
+    echo ""
+    echo "  Then re-run ./setup.sh"
+    fail "Docker is required. See the commands above."
+  fi
+
+  sudo systemctl enable --now docker 2>/dev/null || sudo systemctl start docker 2>/dev/null || true
+  sudo usermod -aG docker "$(whoami)" 2>/dev/null || true
   ok "Docker installed"
 else
   ok "Docker $(docker --version | awk '{print $3}' | tr -d ',')"
 fi
 
 if ! sudo docker info &>/dev/null 2>&1; then
-  sudo systemctl start docker
+  sudo systemctl start docker 2>/dev/null || true
+fi
+if ! sudo docker info &>/dev/null 2>&1; then
+  fail "Docker is installed but the daemon isn't responding. Check: sudo systemctl status docker"
 fi
 
 # ── Step 2: npm install ────────────────────────────────────

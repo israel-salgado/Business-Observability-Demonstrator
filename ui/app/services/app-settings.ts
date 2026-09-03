@@ -16,6 +16,13 @@ import { getCurrentUserDetails } from '@dynatrace-sdk/app-environment';
 const APP_SETTINGS_DOC_NAME = 'bizobs-demonstrator-app-settings';
 let lastSaveError: string | null = null;
 
+export interface AiProviderSettings {
+  provider: 'openai' | 'openai-compatible' | 'azure-openai' | 'github-models' | 'anthropic' | 'ollama';
+  model: string;
+  baseUrl?: string;
+  routeViaVm?: boolean;
+}
+
 export interface AppSettings {
   apiHost: string;
   apiPort: string;
@@ -25,13 +32,25 @@ export interface AppSettings {
   promptTemplates?: string;
   demoSchedules?: string;
   connectionTested?: boolean;
+  ai?: AiProviderSettings;
 }
+
+// Keep the ai defaults aligned with AI_PROVIDERS in api/proxy-api.function.ts.
+// github-models stays the default so existing installs (which store a GitHub PAT
+// under bizobs-github-pat) keep working with no reconfiguration.
+export const AI_PROVIDER_DEFAULTS: AiProviderSettings = {
+  provider: 'github-models',
+  model: 'gpt-4.1',
+  baseUrl: '',
+  routeViaVm: false,
+};
 
 const DEFAULTS: AppSettings = {
   apiHost: 'localhost',
   apiPort: '8080',
   apiProtocol: 'http',
   enableAutoGeneration: false,
+  ai: AI_PROVIDER_DEFAULTS,
 };
 
 function getAuditUser() {
@@ -71,6 +90,9 @@ export async function loadAppSettings(): Promise<{ settings: AppSettings; source
         promptTemplates: s.promptTemplates,
         demoSchedules: s.demoSchedules,
         connectionTested: s.connectionTested,
+        // Merge over the defaults so a document written before the AI provider
+        // work (or a partial ai object) still yields a complete config.
+        ai: { ...AI_PROVIDER_DEFAULTS, ...(s.ai || {}) },
       };
       console.log('[AppSettings] ✅ Loaded from shared document:', settings.apiHost);
       return { settings, source: 'document' };

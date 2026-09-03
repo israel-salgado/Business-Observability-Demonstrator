@@ -37,6 +37,143 @@ const OLLAMA_OBSERVER_MODEL = process.env.OLLAMA_OBSERVER_MODEL || process.env.O
 const OLLAMA_OBSERVER_ENABLED = String(process.env.OLLAMA_OBSERVER_ENABLED || 'true').toLowerCase() !== 'false';
 const DYNATRACE_ASSIST_MODEL = process.env.DYNATRACE_ASSIST_MODEL || 'gpt-4.1';
 
+// ── Provider registry — agnostic AI backend ──────────────────────────────
+// One place that knows how to talk to each supported provider. Adding a new
+// OpenAI-compatible vendor needs no code change: pick "openai-compatible" and
+// pass a baseUrl. Anthropic and Ollama use their own request/response shapes.
+const PROVIDER_REGISTRY = {
+  'openai':            { baseUrl: 'https://api.openai.com/v1',              system: 'openai',            shape: 'openai' },
+  'openai-compatible': { baseUrl: '',                                       system: 'openai_compatible', shape: 'openai' },
+  'azure-openai':      { baseUrl: '',                                       system: 'azure_openai',      shape: 'openai' },
+  'github-models':     { baseUrl: 'https://models.inference.ai.azure.com',  system: 'github_models',     shape: 'openai' },
+  'anthropic':         { baseUrl: 'https://api.anthropic.com',              system: 'anthropic',         shape: 'anthropic' },
+  'ollama':            { baseUrl: OLLAMA_ENDPOINT,                          system: 'ollama',            shape: 'ollama' },
+};
+
+function resolveProvider(provider) {
+  const key = String(provider || 'github-models').toLowerCase().trim();
+  return PROVIDER_REGISTRY[key] ? key : 'openai-compatible';
+}
+
+// Normalizes any provider call to a single result shape:
+// { content, promptTokens, completionTokens, finishReason, responseModel, system }
+async function callChatProvider({ provider, model, baseUrl, apiKey, systemPrompt, prompt, temperature, maxTokens, timeoutMs = 120000 }) {
+  const key = resolveProvider(provider);
+  const def = PROVIDER_REGISTRY[key];
+  const base = String(baseUrl || def.baseUrl || '').replace(/\/+$/, '');
+  const sys = systemPrompt || 'You are a helpful AI assistant. Follow the output format instructions exactly.';
+
+  if (def.shape !== 'ollama' && !apiKey) {
+    throw new Error(`API key required for provider "${key}".`);
+  }
+  if ((key === 'openai-compatible' || key === 'azure-openai') && !base) {
+    throw new Error(`Base URL required for provider "${key}".`);
+  }
+
+  // ── Anthropic (Messages API) ──
+  if (def.shape === 'anthropic') {
+    const resp = await fetch(`${base}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': process.env.ANTHROPIC_VERSION || '2023-06-01',
+      },
+      body: JSON.stringify({
+        model,
+        system: sys,
+        messages: [{ role: 'user', content: prompt }],
+        temperature,
+        max_tokens: maxTokens,
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const json = await resp.json().catch(() => null);
+    if (!resp.ok) {
+      const errText = json ? JSON.stringify(json).slice(0, 300) : `HTTP ${resp.status}`;
+      const e = new Error(`Anthropic API error (${resp.status}): ${errText}`);
+      e.statusCode = resp.status;
+      throw e;
+    }
+    const content = (json?.content || []).filter(b => b?.type === 'text').map(b => b.text).join('') || '';
+    return {
+      content,
+      promptTokens: json?.usage?.input_tokens || 0,
+      completionTokens: json?.usage?.output_tokens || 0,
+      finishReason: json?.stop_reason || 'stop',
+      responseModel: json?.model || model,
+      system: def.system,
+    };
+  }
+
+  // ── Ollama (local, native chat API) ──
+  if (def.shape === 'ollama') {
+    const resp = await fetch(`${base}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: sys },
+          { role: 'user', content: prompt },
+        ],
+        stream: false,
+        options: { temperature, num_predict: maxTokens },
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const json = await resp.json().catch(() => null);
+    if (!resp.ok) {
+      const e = new Error(`Ollama error (${resp.status}): ${json ? JSON.stringify(json).slice(0, 200) : resp.status}`);
+      e.statusCode = resp.status;
+      throw e;
+    }
+    return {
+      content: json?.message?.content || '',
+      promptTokens: json?.prompt_eval_count || 0,
+      completionTokens: json?.eval_count || 0,
+      finishReason: json?.done_reason || 'stop',
+      responseModel: json?.model || model,
+      system: def.system,
+    };
+  }
+
+  // ── OpenAI-compatible (OpenAI, Azure OpenAI, GitHub Models, OpenRouter, etc.) ──
+  const resp = await fetch(`${base}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: sys },
+        { role: 'user', content: prompt },
+      ],
+      temperature,
+      max_tokens: maxTokens,
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const json = await resp.json().catch(() => null);
+  if (!resp.ok) {
+    const errText = json ? JSON.stringify(json).slice(0, 300) : `HTTP ${resp.status}`;
+    const e = new Error(`${def.system} API error (${resp.status}): ${errText}`);
+    e.statusCode = resp.status;
+    throw e;
+  }
+  const usage = json?.usage || {};
+  return {
+    content: json?.choices?.[0]?.message?.content || '',
+    promptTokens: usage.prompt_tokens || 0,
+    completionTokens: usage.completion_tokens || 0,
+    finishReason: json?.choices?.[0]?.finish_reason || 'stop',
+    responseModel: json?.model || model,
+    system: def.system,
+  };
+}
+
 // ── POST /api/ai-generate/dynatrace-assist ──────────────────────────────
 // Model-backed assistant path used by Step 1 (C-Suite analysis).
 router.post('/dynatrace-assist', async (req, res) => {
@@ -363,6 +500,124 @@ router.post('/github', async (req, res) => {
 
     console.error('[ai-generate] GitHub Models error:', err.message);
     return res.status(500).json({ success: false, error: err.message || 'AI generation failed' });
+  }
+});
+
+// ── POST /api/ai-generate/complete ───────────────────────────────────────
+// Provider-agnostic, OTel-traced chat completion. Used by the AppEngine app
+// when the "trace AI calls" option is on, and always for Ollama (which the
+// app can't reach directly). Body: { provider, model, baseUrl?, prompt,
+// systemPrompt?, temperature?, maxTokens? }. API key via x-ai-api-key header.
+router.post('/complete', async (req, res) => {
+  const {
+    provider = 'github-models',
+    model,
+    baseUrl,
+    prompt,
+    systemPrompt = 'You are a helpful AI assistant. Follow the output format instructions exactly.',
+    temperature = 0.7,
+    maxTokens = 4096,
+  } = req.body || {};
+
+  if (!prompt) return res.status(400).json({ success: false, error: 'prompt is required' });
+  if (!model) return res.status(400).json({ success: false, error: 'model is required' });
+
+  const apiKey = req.headers['x-ai-api-key'] || req.body.apiKey || req.headers['x-github-token'] || req.body.token;
+  const providerKey = resolveProvider(provider);
+  const def = PROVIDER_REGISTRY[providerKey];
+  const serverAddress = (() => {
+    try { return new URL(baseUrl || def.baseUrl).host; } catch { return def.system; }
+  })();
+
+  const startTime = Date.now();
+  const span = _tracer.startSpan(`chat ${model}`, {
+    kind: SpanKind.CLIENT,
+    attributes: {
+      'gen_ai.system': def.system,
+      'gen_ai.provider.name': def.system,
+      'gen_ai.operation.name': 'chat',
+      'gen_ai.request.model': model,
+      'gen_ai.request.max_tokens': maxTokens,
+      'gen_ai.request.temperature': temperature,
+      'gen_ai.prompt.0.role': 'system',
+      'gen_ai.prompt.0.content': String(systemPrompt).substring(0, 4096),
+      'gen_ai.prompt.1.role': 'user',
+      'gen_ai.prompt.1.content': String(prompt).substring(0, 4096),
+      'server.address': serverAddress,
+    },
+  });
+  span.addEvent('gen_ai.content.prompt', {
+    'gen_ai.prompt': JSON.stringify([
+      { role: 'system', content: String(systemPrompt) },
+      { role: 'user', content: String(prompt).substring(0, 8192) },
+    ]),
+  });
+
+  try {
+    const out = await callChatProvider({
+      provider: providerKey, model, baseUrl, apiKey, systemPrompt, prompt, temperature, maxTokens,
+    });
+    const durationMs = Date.now() - startTime;
+
+    span.setAttributes({
+      'gen_ai.response.model': out.responseModel,
+      'gen_ai.usage.input_tokens': out.promptTokens,
+      'gen_ai.usage.output_tokens': out.completionTokens,
+      'gen_ai.completion.0.role': 'assistant',
+      'gen_ai.completion.0.content': String(out.content).substring(0, 4096),
+      'gen_ai.response.finish_reason': out.finishReason,
+      'gen_ai.response.duration_ms': durationMs,
+    });
+    span.addEvent('gen_ai.content.completion', {
+      'gen_ai.completion': JSON.stringify([{ role: 'assistant', content: String(out.content).substring(0, 8192) }]),
+    });
+    span.setStatus({ code: SpanStatusCode.OK });
+    span.end();
+
+    const metricAttrs = {
+      'gen_ai.system': out.system,
+      'gen_ai.provider.name': out.system,
+      'gen_ai.request.model': model,
+      'gen_ai.operation.name': 'chat',
+    };
+    _tokenCounter.add(out.promptTokens, { ...metricAttrs, 'gen_ai.token.type': 'input' });
+    _tokenCounter.add(out.completionTokens, { ...metricAttrs, 'gen_ai.token.type': 'output' });
+    _durationHist.record(durationMs, metricAttrs);
+    _requestCounter.add(1, { ...metricAttrs, 'gen_ai.response.status': 'ok' });
+
+    return res.json({
+      success: true,
+      data: {
+        content: out.content,
+        model: out.responseModel,
+        usage: { prompt_tokens: out.promptTokens, completion_tokens: out.completionTokens, total_tokens: out.promptTokens + out.completionTokens },
+        genai: {
+          system: out.system,
+          model: out.responseModel,
+          promptTokens: out.promptTokens,
+          completionTokens: out.completionTokens,
+          totalTokens: out.promptTokens + out.completionTokens,
+          durationMs,
+          finishReason: out.finishReason,
+        },
+      },
+    });
+  } catch (err) {
+    const durationMs = Date.now() - startTime;
+    const status = err?.statusCode || 500;
+    span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
+    span.setAttributes({ 'gen_ai.response.duration_ms': durationMs, 'gen_ai.response.status': `error_${status}` });
+    span.end();
+    _requestCounter.add(1, {
+      'gen_ai.system': def.system,
+      'gen_ai.provider.name': def.system,
+      'gen_ai.request.model': model,
+      'gen_ai.operation.name': 'chat',
+      'gen_ai.response.status': 'error',
+    });
+    console.error(`[ai-generate] ${def.system} error:`, err.message);
+    const code = status === 401 ? 'AUTH_FAILED' : status === 429 ? 'RATE_LIMITED' : 'PROVIDER_FAILED';
+    return res.status(status).json({ success: false, error: err.message || 'AI generation failed', code });
   }
 });
 

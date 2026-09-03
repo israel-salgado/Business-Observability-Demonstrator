@@ -235,6 +235,71 @@ const toJourneyKey = (companyName: string, journeyType: string) => {
   return `${String(companyName || '').trim().toLowerCase()}::${String(journeyType || '').trim().toLowerCase()}`;
 };
 
+// ── AI provider catalog ──────────────────────────────────────────────────
+// Mirrors AI_PROVIDERS in api/proxy-api.function.ts. Keep the ids in sync:
+// the function normalizes anything unknown to 'openai-compatible'.
+type AiProviderId = 'openai' | 'openai-compatible' | 'azure-openai' | 'github-models' | 'anthropic' | 'ollama';
+
+interface AiProviderCatalogEntry {
+  id: AiProviderId;
+  label: string;
+  defaultModel: string;
+  suggestedModels: string[];
+  needsBaseUrl: boolean;
+  needsKey: boolean;
+  alwaysViaVm: boolean;
+  keyHint: string;
+  keyUrl?: string;
+  note?: string;
+}
+
+const AI_PROVIDER_CATALOG: AiProviderCatalogEntry[] = [
+  {
+    id: 'openai', label: 'OpenAI', defaultModel: 'gpt-4.1',
+    suggestedModels: ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o'],
+    needsBaseUrl: false, needsKey: true, alwaysViaVm: false,
+    keyHint: 'sk-...', keyUrl: 'https://platform.openai.com/api-keys',
+  },
+  {
+    id: 'anthropic', label: 'Anthropic (Claude)', defaultModel: 'claude-3-5-sonnet-latest',
+    suggestedModels: ['claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest'],
+    needsBaseUrl: false, needsKey: true, alwaysViaVm: false,
+    keyHint: 'sk-ant-...', keyUrl: 'https://console.anthropic.com/settings/keys',
+  },
+  {
+    id: 'github-models', label: 'GitHub Models (Copilot PAT)', defaultModel: 'gpt-4.1',
+    suggestedModels: ['gpt-4.1', 'gpt-4o', 'gpt-4.1-mini'],
+    needsBaseUrl: false, needsKey: true, alwaysViaVm: false,
+    keyHint: 'ghp_... or github_pat_...', keyUrl: 'https://github.com/settings/personal-access-tokens',
+    note: 'A fine-grained token with default read-only access is enough.',
+  },
+  {
+    id: 'azure-openai', label: 'Azure OpenAI', defaultModel: 'gpt-4.1',
+    suggestedModels: ['gpt-4.1', 'gpt-4o'],
+    needsBaseUrl: true, needsKey: true, alwaysViaVm: false,
+    keyHint: 'Azure API key',
+    note: 'Base URL is your deployment endpoint, e.g. https://<resource>.openai.azure.com/openai/deployments/<deployment>',
+  },
+  {
+    id: 'openai-compatible', label: 'OpenAI-compatible (OpenRouter, vLLM, LiteLLM, etc.)', defaultModel: 'gpt-4.1',
+    suggestedModels: [],
+    needsBaseUrl: true, needsKey: true, alwaysViaVm: false,
+    keyHint: 'Provider API key',
+    note: 'Any gateway exposing POST /chat/completions. Base URL should include the version path, e.g. https://openrouter.ai/api/v1',
+  },
+  {
+    id: 'ollama', label: 'Ollama (on the demo host)', defaultModel: 'llama3.2',
+    suggestedModels: ['llama3.2', 'llama3.1', 'mistral'],
+    needsBaseUrl: false, needsKey: false, alwaysViaVm: true,
+    keyHint: '',
+    note: 'Runs on the demo host, so calls always route through it. No API key needed.',
+  },
+];
+
+const aiProviderDef = (id: string): AiProviderCatalogEntry =>
+  AI_PROVIDER_CATALOG.find(p => p.id === id)
+  || AI_PROVIDER_CATALOG.find(p => p.id === 'openai-compatible')!;
+
 export const HomePage = () => {
   const [activeTab, setActiveTab] = useState('welcome');
   const [selectedPathway, setSelectedPathway] = useState<'ai' | 'manual' | null>(null);
@@ -295,7 +360,7 @@ export const HomePage = () => {
   });
 
   // Settings modal tab state
-  const [settingsTab, setSettingsTab] = useState<'config' | 'edgeconnect' | 'system' | 'copilot'>('config');
+  const [settingsTab, setSettingsTab] = useState<'config' | 'edgeconnect' | 'system' | 'ai'>('config');
 
   // System maintenance state
   const [systemHealth, setSystemHealth] = useState<any>(null);
@@ -702,14 +767,24 @@ export const HomePage = () => {
   // Step 2 guided sub-step state
   const [step2Phase, setStep2Phase] = useState<'prompts' | 'response' | 'generate'>(  'prompts');
 
-  // GitHub Copilot AI generation state
+  // AI generation state. Note: the gh* names are historical (this used to be
+  // GitHub-Copilot-only). They now mean "the configured AI provider", whichever
+  // one that is. ghCopilotConfigured gates every Generate button in the app.
   const [ghCopilotConfigured, setGhCopilotConfigured] = useState(false);
   const [ghCopilotChecking, setGhCopilotChecking] = useState(false);
   const [ghCopilotToken, setGhCopilotToken] = useState('');
   const [ghCopilotSaving, setGhCopilotSaving] = useState(false);
   const [ghCopilotStatus, setGhCopilotStatus] = useState('');
   const [ghCopilotModel, setGhCopilotModel] = useState('gpt-4.1');
-  const [ghAvailableModels, setGhAvailableModels] = useState<Array<{ id: string; name: string; owned_by: string }>>([]);
+
+  // Provider-agnostic AI settings (provider/baseUrl/routeViaVm live in the shared
+  // app-settings document; the API key lives in the Dynatrace credential vault).
+  const [aiProvider, setAiProvider] = useState<AiProviderId>('github-models');
+  const [aiBaseUrl, setAiBaseUrl] = useState('');
+  const [aiRouteViaVm, setAiRouteViaVm] = useState(false);
+  const [aiProviderHost, setAiProviderHost] = useState('');
+  const [aiHostAllowed, setAiHostAllowed] = useState(true);
+  const [aiConfigSaving, setAiConfigSaving] = useState(false);
   const [ghGenerating1, setGhGenerating1] = useState(false);
   const [ghGenerating2, setGhGenerating2] = useState(false);
   const [ghGeneratingAll, setGhGeneratingAll] = useState(false);
@@ -802,7 +877,7 @@ export const HomePage = () => {
     { key: 'openpipeline-routing', label: 'OpenPipeline Routing Configured', section: 'config' },
     { key: 'biz-events', label: 'Business Event Capture Rule', section: 'config' },
     { key: 'feature-flags', label: 'OneAgent Feature Flag Enabled', section: 'config' },
-    { key: 'outbound-github-models', label: 'GitHub Copilot Outbound Allowed', section: 'config' },
+    { key: 'outbound-github-models', label: 'AI Provider Outbound Allowed', section: 'config' },
     { key: 'automation-workflow', label: 'Fix-It Agent Workflow Deployed', section: 'config' },
   ];
 
@@ -1135,34 +1210,54 @@ export const HomePage = () => {
     showToast('Removed scheduled demo', 'info', 2500);
   };
 
-  // ── Check if GitHub Copilot credential is configured + fetch available models ──
-  useEffect(() => {
-    (async () => {
-      setGhCopilotChecking(true);
-      try {
-        const resp = await functions.call('proxy-api', { data: { action: 'github-copilot-check-credential', apiHost: '', apiPort: '', apiProtocol: '' } });
-        const res = await resp.json();
-        if (res.success && res.data?.configured) {
-          setGhCopilotConfigured(true);
-          // Fetch available models
-          try {
-            const modelsResp = await functions.call('proxy-api', { data: { action: 'github-copilot-list-models', apiHost: '', apiPort: '', apiProtocol: '' } });
-            const modelsRes = await modelsResp.json();
-            if (modelsRes.success && modelsRes.data?.models?.length > 0) {
-              setGhAvailableModels(modelsRes.data.models);
-              // If current model not in list, default to first available
-              const ids = modelsRes.data.models.map((m: any) => m.id);
-              if (!ids.includes(ghCopilotModel)) {
-                const preferred = ids.find((id: string) => id === 'gpt-4.1') || ids[0];
-                setGhCopilotModel(preferred);
-              }
-            }
-          } catch { /* models fetch failed — use hardcoded defaults */ }
-        }
-      } catch { /* ignore */ }
-      setGhCopilotChecking(false);
-    })();
+  // ── Load AI provider status (provider, model, key, outbound allowlist) ──
+  // Reads whatever the app function resolved from the shared settings document
+  // plus the credential vault, so the Settings panel reflects real backend state.
+  const refreshAiProviderStatus = useCallback(async () => {
+    setGhCopilotChecking(true);
+    try {
+      const resp = await functions.call('proxy-api', { data: { action: 'ai-provider-status', apiHost: '', apiPort: '', apiProtocol: '' } });
+      const res = await resp.json();
+      if (res.success && res.data) {
+        const d = res.data;
+        const def = aiProviderDef(d.provider);
+        setAiProvider(def.id);
+        setAiBaseUrl(String(d.baseUrl || ''));
+        setAiRouteViaVm(Boolean(d.routeViaVm));
+        setAiProviderHost(String(d.host || ''));
+        setAiHostAllowed(d.hostAllowed !== false);
+        setGhCopilotModel(String(d.model || def.defaultModel));
+        setGhCopilotConfigured(Boolean(d.keyConfigured));
+      }
+    } catch { /* leave defaults in place */ }
+    setGhCopilotChecking(false);
   }, []);
+
+  useEffect(() => { void refreshAiProviderStatus(); }, [refreshAiProviderStatus]);
+
+  // Options for the inline model pickers. Curated per provider, and always
+  // includes the currently selected model so a controlled <select> never holds
+  // a value it has no matching <option> for.
+  const aiModelOptions = useMemo(() => {
+    const base = aiProviderDef(aiProvider).suggestedModels;
+    return Array.from(new Set([ghCopilotModel, ...base].filter(Boolean)));
+  }, [aiProvider, ghCopilotModel]);
+
+  // Persists provider/model/baseUrl/routeViaVm into the shared app-settings
+  // document. The API key is never stored here, it goes to the credential vault.
+  const persistAiConfig = useCallback(async (
+    overrides?: Partial<{ provider: AiProviderId; model: string; baseUrl: string; routeViaVm: boolean }>
+  ): Promise<boolean> => {
+    const next = {
+      provider: aiProvider,
+      model: ghCopilotModel,
+      baseUrl: aiBaseUrl,
+      routeViaVm: aiRouteViaVm,
+      ...overrides,
+    };
+    const current = await loadAppSettings();
+    return saveAppSettings({ ...current.settings, ai: next } as AppSettings);
+  }, [aiProvider, ghCopilotModel, aiBaseUrl, aiRouteViaVm]);
 
   // ── Detect builtin Dynatrace settings via serverless function ──
   // Runs once on load if stale (>1 hour), or when forced via Refresh button
@@ -1210,9 +1305,11 @@ export const HomePage = () => {
         lastDetectRef.current = now;
         localStorage.setItem(DETECT_CACHE_KEY, String(now));
 
-        // Auto-deploy outbound allowlist if not yet configured (required for Copilot AI)
+        // Auto-deploy outbound allowlist if not yet configured (required for direct AI provider calls).
+        // NOTE: the 'outbound-github-models' key is a backend detection id, kept for compatibility.
+        // Saving a provider key also allowlists that provider's host via ai-provider-save-key.
         if (result.data['outbound-github-models'] === false) {
-          console.log('[BizObs] Auto-deploying outbound allowlist for GitHub Copilot hosts...');
+          console.log('[BizObs] Auto-deploying outbound allowlist for AI provider hosts...');
           try {
             await callProxyWithRetry(
               { action: 'deploy-builtin-settings', body: { configs: ['outbound-github-models'] } },
@@ -4356,13 +4453,13 @@ export const HomePage = () => {
         </Paragraph>
 
         <Flex gap={20}>
-          {/* Pathway 1: Generate with GitHub Copilot AI */}
+          {/* Pathway 1: Generate with the configured AI provider */}
           <div
             onClick={() => {
               if (ghCopilotConfigured) {
                 setSelectedPathway('ai'); setActiveTab('step1');
               } else {
-                setShowSettingsModal(true); setSettingsTab('copilot');
+                setShowSettingsModal(true); setSettingsTab('ai');
               }
             }}
             style={{
@@ -4397,11 +4494,11 @@ export const HomePage = () => {
                   : `2px solid ${Colors.Border.Neutral.Default}`,
                 display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32,
               }}>{ghCopilotConfigured ? '✨' : '🔒'}</div>
-              <Heading level={4} style={{ marginBottom: 4 }}>Generate with GitHub Copilot AI</Heading>
+              <Heading level={4} style={{ marginBottom: 4 }}>Generate with AI</Heading>
               <Paragraph style={{ fontSize: 12, opacity: 0.7, marginBottom: 0 }}>
                 {ghCopilotConfigured
-                  ? 'Fully automated — AI generates everything'
-                  : 'Requires GitHub PAT — click to configure in Settings'}
+                  ? 'Fully automated. AI generates everything'
+                  : 'Requires an AI provider. Click to configure in Settings'}
               </Paragraph>
             </div>
             <Flex flexDirection="column" gap={8}>
@@ -4426,12 +4523,12 @@ export const HomePage = () => {
                   : Colors.Border.Neutral.Default,
                 color: 'white',
               }}>
-                {ghCopilotConfigured ? 'Start with AI →' : '🔧 Set Up GitHub Integration'}
+                {ghCopilotConfigured ? 'Start with AI →' : '🔧 Set Up AI Provider'}
               </div>
             </div>
           </div>
 
-          {/* Pathway 2: Use Copilot Prompts (Manual) */}
+          {/* Pathway 2: Use the prompt templates manually */}
           <div
             onClick={() => { setSelectedPathway('manual'); setActiveTab('step1'); }}
             style={{
@@ -4451,8 +4548,8 @@ export const HomePage = () => {
                 border: '2px solid rgba(108,44,156,0.5)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32,
               }}>📋</div>
-              <Heading level={4} style={{ marginBottom: 4 }}>Use Copilot Prompts Manually</Heading>
-              <Paragraph style={{ fontSize: 12, opacity: 0.7, marginBottom: 0 }}>Copy prompts to your own AI — ChatGPT, Gemini, Claude etc.</Paragraph>
+              <Heading level={4} style={{ marginBottom: 4 }}>Use AI Prompts Manually</Heading>
+              <Paragraph style={{ fontSize: 12, opacity: 0.7, marginBottom: 0 }}>Copy prompts to your own AI: ChatGPT, Gemini, Claude etc.</Paragraph>
             </div>
             <Flex flexDirection="column" gap={8}>
               <Flex alignItems="center" gap={8}>
@@ -4483,7 +4580,7 @@ export const HomePage = () => {
     </Flex>
   );
 
-  // ── "Use Copilot Prompts Manually" stepped flow ─────────────
+  // ── "Use AI Prompts Manually" stepped flow ─────────────
   const renderOwnAiTab = () => (
     <Flex flexDirection="column" gap={20}>
       {/* Phase indicator */}
@@ -4677,21 +4774,16 @@ export const HomePage = () => {
                       cursor: 'pointer', minWidth: 140,
                     }}
                   >
-                    {ghAvailableModels.length > 0
-                      ? ghAvailableModels.map(m => (
-                          <option key={m.id} value={m.id}>{m.id}</option>
-                        ))
-                      : ['gpt-4.1'].map(id => (
-                          <option key={id} value={id}>{id}</option>
-                        ))
-                    }
+                    {aiModelOptions.map(id => (
+                      <option key={id} value={id}>{id}</option>
+                    ))}
                   </select>
                 )}
                 <Button
                   variant="accent"
                   disabled={!selectedJourneyName || !ghCopilotConfigured}
                   onClick={() => runPastedAiPipeline(pastedAiResponse, selectedJourneyName)}
-                  title={!ghCopilotConfigured ? 'Configure GitHub PAT in Settings first' : `Generate "${selectedJourneyName}" journey config`}
+                  title={!ghCopilotConfigured ? 'Configure an AI provider in Settings first' : `Generate "${selectedJourneyName}" journey config`}
                   style={{
                     padding: '12px 28px', fontWeight: 700, fontSize: 15, borderRadius: 10,
                     background: selectedJourneyName && ghCopilotConfigured
@@ -4708,7 +4800,7 @@ export const HomePage = () => {
             </Flex>
             {!ghCopilotConfigured && (
               <Paragraph style={{ fontSize: 12, marginTop: 12, color: 'rgba(220,50,47,0.8)' }}>
-                ⚠️ Configure your GitHub PAT in Settings → GitHub Copilot to enable generation
+                ⚠️ Configure an AI provider in Settings → AI Provider to enable generation
               </Paragraph>
             )}
           </div>
@@ -4821,14 +4913,9 @@ export const HomePage = () => {
                       cursor: 'pointer', minWidth: 140,
                     }}
                   >
-                    {ghAvailableModels.length > 0
-                      ? ghAvailableModels.map(m => (
-                          <option key={m.id} value={m.id}>{m.id}</option>
-                        ))
-                      : ['gpt-4.1'].map(id => (
-                          <option key={id} value={id}>{id}</option>
-                        ))
-                    }
+                    {aiModelOptions.map(id => (
+                      <option key={id} value={id}>{id}</option>
+                    ))}
                   </select>
                 )}
                 {/* Generate with AI button — AI pathway only */}
@@ -4837,7 +4924,7 @@ export const HomePage = () => {
                   variant="accent"
                   disabled={!companyName || !domain || !ghCopilotConfigured || ghGeneratingAll}
                   onClick={() => runAiGenerationPipeline()}
-                  title={!ghCopilotConfigured ? 'Configure GitHub PAT in Settings → GitHub Copilot first' : `Generate, validate & deploy with AI using ${ghCopilotModel}`}
+                  title={!ghCopilotConfigured ? 'Configure an AI provider in Settings → AI Provider first' : `Generate, validate & deploy with AI using ${ghCopilotModel}`}
                   style={{
                     padding: '10px 24px', opacity: !ghCopilotConfigured ? 0.4 : 1,
                     fontWeight: 700, fontSize: 14,
@@ -5007,20 +5094,20 @@ export const HomePage = () => {
           <div>
             <Paragraph style={{ fontSize: 13, marginBottom: 16, lineHeight: 1.6 }}>
               Copy each prompt below into an <Strong>external AI assistant</Strong> (e.g. ChatGPT, Gemini, or Microsoft Copilot — <em>not</em> Dynatrace Copilot). Run Prompt 1 first, then Prompt 2 in the <Strong>same conversation</Strong>.
-              {ghCopilotConfigured && <> Or use <Strong>✨ Generate with AI</Strong> to run them directly using your GitHub Copilot subscription.</>}
+              {ghCopilotConfigured && <> Or use <Strong>✨ Generate with AI</Strong> to run them directly using your configured AI provider.</>}
             </Paragraph>
 
-            {/* GitHub Copilot not configured banner */}
+            {/* AI provider not configured banner */}
             {!ghCopilotConfigured && !ghCopilotChecking && (
               <div style={{
                 padding: 10, marginBottom: 12, borderRadius: 8,
                 background: 'rgba(0,161,201,0.06)', border: '1px solid rgba(0,161,201,0.2)',
                 cursor: 'pointer',
-              }} onClick={() => { setShowSettingsModal(true); setSettingsTab('copilot'); }}>
+              }} onClick={() => { setShowSettingsModal(true); setSettingsTab('ai'); }}>
                 <Flex alignItems="center" gap={8}>
                   <span style={{ fontSize: 16 }}>💡</span>
                   <Paragraph style={{ fontSize: 12, marginBottom: 0, lineHeight: 1.4 }}>
-                    <Strong>Tip:</Strong> Configure a GitHub Personal Access Token in <Strong>Settings → GitHub Copilot</Strong> to generate AI responses directly in the app — no copy/paste needed.
+                    <Strong>Tip:</Strong> Add an AI provider key in <Strong>Settings → AI Provider</Strong> to generate AI responses directly in the app, with no copy/paste needed.
                   </Paragraph>
                 </Flex>
               </div>
@@ -5059,7 +5146,7 @@ export const HomePage = () => {
                           setGhResult1('');
                           if (res.code === 'NO_CREDENTIAL') {
                             setShowSettingsModal(true);
-                            setSettingsTab('copilot');
+                            setSettingsTab('ai');
                           }
                           showToast(`❌ ${res.error}`, 'error', 6000);
                         }
@@ -5068,7 +5155,7 @@ export const HomePage = () => {
                       }
                       setGhGenerating1(false);
                     }}
-                    title={!ghCopilotConfigured ? 'Configure GitHub PAT in Settings → GitHub Copilot first' : 'Generate with AI using your GitHub Copilot'}
+                    title={!ghCopilotConfigured ? 'Configure an AI provider in Settings → AI Provider first' : 'Generate with your configured AI provider'}
                     style={{ opacity: !ghCopilotConfigured ? 0.5 : 1 }}
                   >
                     {ghGenerating1 ? '⏳ Generating...' : '✨ Generate with AI'}
@@ -5150,7 +5237,7 @@ export const HomePage = () => {
                           setGhResult2('');
                           if (res.code === 'NO_CREDENTIAL') {
                             setShowSettingsModal(true);
-                            setSettingsTab('copilot');
+                            setSettingsTab('ai');
                           }
                           showToast(`❌ ${res.error}`, 'error', 6000);
                         }
@@ -5159,7 +5246,7 @@ export const HomePage = () => {
                       }
                       setGhGenerating2(false);
                     }}
-                    title={!ghCopilotConfigured ? 'Configure GitHub PAT in Settings → GitHub Copilot first' : 'Generate with AI using your GitHub Copilot'}
+                    title={!ghCopilotConfigured ? 'Configure an AI provider in Settings → AI Provider first' : 'Generate with your configured AI provider'}
                     style={{ opacity: !ghCopilotConfigured ? 0.5 : 1 }}
                   >
                     {ghGenerating2 ? '⏳ Generating...' : '✨ Generate with AI'}
@@ -6136,7 +6223,7 @@ export const HomePage = () => {
               <Flex gap={0}>
                 {([
                   { id: 'config', icon: '🔌', label: 'API Config' },
-                  { id: 'copilot', icon: '🤖', label: 'GitHub Copilot' },
+                  { id: 'ai', icon: '🤖', label: 'AI Provider' },
                   { id: 'system', icon: '💾', label: 'System' },
                 ] as const).map(tab => (
                   <button
@@ -6268,106 +6355,294 @@ export const HomePage = () => {
             </div>
             )}
 
-            {/* GitHub Copilot Tab */}
-            {settingsTab === 'copilot' && (
+            {/* AI Provider Tab */}
+            {settingsTab === 'ai' && (
             <div style={{ padding: 24 }}>
-              <Strong style={{ fontSize: 15, display: 'block', marginBottom: 4 }}>🤖 GitHub Copilot AI Generation</Strong>
+              <Strong style={{ fontSize: 15, display: 'block', marginBottom: 4 }}>🤖 AI Provider</Strong>
               <Paragraph style={{ fontSize: 12, marginBottom: 16, opacity: 0.7, lineHeight: 1.5 }}>
-                Use your GitHub Copilot subscription to generate executive summaries and journey configs directly in the app — no copy/paste needed.
-                Your GitHub Personal Access Token is stored securely in the Dynatrace Credential Vault.
+                Bring your own AI. Pick a provider, enter a key, and the app generates executive summaries,
+                journeys, and dashboards directly. Your key is stored in the Dynatrace Credential Vault,
+                never in the app or in a document.
               </Paragraph>
 
               {/* Status indicator */}
-              <div style={{
-                padding: 12, marginBottom: 16, borderRadius: 8,
-                background: ghCopilotConfigured ? 'rgba(115,190,40,0.1)' : 'rgba(220,50,47,0.08)',
-                border: `1px solid ${ghCopilotConfigured ? 'rgba(115,190,40,0.4)' : 'rgba(220,50,47,0.3)'}`,
-              }}>
-                <Flex alignItems="center" gap={8}>
-                  <span style={{ fontSize: 18 }}>{ghCopilotChecking ? '⏳' : ghCopilotConfigured ? '✅' : '⚠️'}</span>
-                  <div>
-                    <Strong style={{ fontSize: 13 }}>
-                      {ghCopilotChecking ? 'Checking credential vault...' : ghCopilotConfigured ? 'GitHub PAT configured — ready to generate' : 'Not configured — Generate with AI buttons will be disabled'}
-                    </Strong>
-                    {!ghCopilotConfigured && !ghCopilotChecking && (
-                      <Paragraph style={{ fontSize: 11, marginBottom: 0, marginTop: 2, opacity: 0.8 }}>
-                        Enter your GitHub Personal Access Token below to enable AI-powered generation.
-                      </Paragraph>
-                    )}
+              {(() => {
+                const def = aiProviderDef(aiProvider);
+                const ready = ghCopilotConfigured && (!def.needsBaseUrl || Boolean(aiBaseUrl.trim()));
+                return (
+                  <div style={{
+                    padding: 12, marginBottom: 16, borderRadius: 8,
+                    background: ready ? 'rgba(115,190,40,0.1)' : 'rgba(220,50,47,0.08)',
+                    border: `1px solid ${ready ? 'rgba(115,190,40,0.4)' : 'rgba(220,50,47,0.3)'}`,
+                  }}>
+                    <Flex alignItems="center" gap={8}>
+                      <span style={{ fontSize: 18 }}>{ghCopilotChecking ? '⏳' : ready ? '✅' : '⚠️'}</span>
+                      <div>
+                        <Strong style={{ fontSize: 13 }}>
+                          {ghCopilotChecking
+                            ? 'Checking provider configuration...'
+                            : ready
+                              ? `${def.label} ready via ${aiRouteViaVm || def.alwaysViaVm ? 'the demo host' : 'Dynatrace'} using ${ghCopilotModel}`
+                              : 'Not configured. Generate with AI buttons will be disabled.'}
+                        </Strong>
+                        {!ghCopilotChecking && (
+                          <Paragraph style={{ fontSize: 11, marginBottom: 0, marginTop: 2, opacity: 0.8 }}>
+                            {!ready
+                              ? (def.needsKey && !ghCopilotConfigured
+                                  ? `Add a ${def.label} API key below to enable AI generation.`
+                                  : 'Add the base URL below to enable AI generation.')
+                              : aiProviderHost
+                                ? (aiHostAllowed
+                                    ? `Outbound to ${aiProviderHost} is allowlisted.`
+                                    : `⚠️ ${aiProviderHost} is not in the outbound allowlist yet. Re-save the key to add it.`)
+                                : 'Calls route through the demo host, so no outbound allowlist entry is needed.'}
+                          </Paragraph>
+                        )}
+                      </div>
+                    </Flex>
                   </div>
-                </Flex>
-              </div>
+                );
+              })()}
 
-              {/* How to get a token */}
-              <div style={{
-                padding: 12, marginBottom: 16, borderRadius: 8,
-                background: 'rgba(0,161,201,0.06)', border: '1px solid rgba(0,161,201,0.2)',
-              }}>
-                <Strong style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>📋 How to create a GitHub Personal Access Token</Strong>
-                <ol style={{ margin: 0, paddingLeft: 20, fontSize: 12, lineHeight: 1.8, opacity: 0.9 }}>
-                  <li>Go to <Strong>github.com → Settings → Developer Settings → Personal Access Tokens → Fine-grained tokens</Strong></li>
-                  <li>Click <Strong>Generate new token</Strong></li>
-                  <li>Give it a name like <Strong>BizObs Demonstrator</Strong></li>
-                  <li>No special permissions needed — just the default (read-only access to your public profile)</li>
-                  <li>Copy the token (starts with <code style={{ background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 3 }}>ghp_</code> or <code style={{ background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 3 }}>github_pat_</code>)</li>
-                </ol>
-              </div>
-
-              {/* Token input */}
+              {/* Provider selector */}
               <div style={{ marginBottom: 16 }}>
-                <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>GitHub Personal Access Token</label>
-                <Flex gap={8}>
+                <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Provider</label>
+                <select
+                  value={aiProvider}
+                  onChange={(e: any) => {
+                    const nextId = e.target.value as AiProviderId;
+                    const nextDef = aiProviderDef(nextId);
+                    setAiProvider(nextId);
+                    setGhCopilotModel(nextDef.defaultModel);
+                    setAiBaseUrl('');
+                    setAiProviderHost('');
+                    setGhCopilotStatus('');
+                    // Ollama needs no key, so it counts as configured the moment
+                    // it's picked. Keyed providers share one vault credential, so
+                    // whatever was already stored still applies.
+                    if (!nextDef.needsKey) setGhCopilotConfigured(true);
+                    // Ollama runs on the host, so it can only be reached via the host.
+                    if (nextDef.alwaysViaVm) setAiRouteViaVm(true);
+                  }}
+                  style={{
+                    width: '100%', padding: '8px 12px', borderRadius: 6,
+                    background: Colors.Background.Base.Default,
+                    border: `1px solid ${Colors.Border.Neutral.Default}`,
+                    color: Colors.Text.Neutral.Default, fontSize: 13,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {AI_PROVIDER_CATALOG.map(p => (
+                    <option key={p.id} value={p.id}>{p.label}</option>
+                  ))}
+                </select>
+                {aiProviderDef(aiProvider).note && (
+                  <Paragraph style={{ fontSize: 11, marginTop: 4, marginBottom: 0, opacity: 0.7 }}>
+                    {aiProviderDef(aiProvider).note}
+                  </Paragraph>
+                )}
+              </div>
+
+              {/* Base URL (only for providers that need one) */}
+              {aiProviderDef(aiProvider).needsBaseUrl && (
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Base URL</label>
                   <input
-                    type="password"
-                    placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                    value={ghCopilotToken}
-                    onChange={(e: any) => setGhCopilotToken(e.target.value)}
+                    type="text"
+                    placeholder="https://your-gateway.example.com/v1"
+                    value={aiBaseUrl}
+                    onChange={(e: any) => setAiBaseUrl(e.target.value)}
                     style={{
-                      flex: 1, padding: '8px 12px', borderRadius: 6,
+                      width: '100%', padding: '8px 12px', borderRadius: 6,
                       background: Colors.Background.Base.Default,
                       border: `1px solid ${Colors.Border.Neutral.Default}`,
                       color: Colors.Text.Neutral.Default, fontSize: 13,
                       fontFamily: 'monospace',
                     }}
                   />
-                  <Button
-                    variant="emphasized"
-                    disabled={!ghCopilotToken.trim() || ghCopilotSaving}
-                    onClick={async () => {
-                      setGhCopilotSaving(true);
-                      setGhCopilotStatus('⏳ Saving to Credential Vault...');
-                      try {
-                        const res = await callProxyWithRetry({
-                          action: 'github-copilot-save-credential',
-                          apiHost: '', apiPort: '', apiProtocol: '',
-                          body: { token: ghCopilotToken.trim() },
-                        });
-                        if (res.success) {
-                          setGhCopilotStatus(`✅ Token ${res.data?.updated ? 'updated' : 'saved'} in Credential Vault`);
-                          setGhCopilotConfigured(true);
-                          setGhCopilotToken('');
-                          // Refresh available models list
-                          try {
-                            const modelsResp = await functions.call('proxy-api', { data: { action: 'github-copilot-list-models', apiHost: '', apiPort: '', apiProtocol: '' } });
-                            const modelsRes = await modelsResp.json();
-                            if (modelsRes.success && modelsRes.data?.models?.length > 0) {
-                              setGhAvailableModels(modelsRes.data.models);
-                              setGhCopilotStatus(`✅ Token ${res.data?.updated ? 'updated' : 'saved'} — ${modelsRes.data.models.length} models available`);
-                            }
-                          } catch { /* models fetch failed */ }
-                        } else {
-                          setGhCopilotStatus(`❌ ${res.error}`);
-                        }
-                      } catch (err: any) {
-                        setGhCopilotStatus(`❌ ${err.message}`);
-                      }
-                      setGhCopilotSaving(false);
-                    }}
-                  >
-                    {ghCopilotSaving ? '⏳ Saving...' : '🔐 Save to Vault'}
-                  </Button>
-                </Flex>
+                </div>
+              )}
+
+              {/* Model */}
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Model</label>
+                <input
+                  type="text"
+                  placeholder={aiProviderDef(aiProvider).defaultModel}
+                  value={ghCopilotModel}
+                  onChange={(e: any) => setGhCopilotModel(e.target.value)}
+                  style={{
+                    width: '100%', padding: '8px 12px', borderRadius: 6,
+                    background: Colors.Background.Base.Default,
+                    border: `1px solid ${Colors.Border.Neutral.Default}`,
+                    color: Colors.Text.Neutral.Default, fontSize: 13,
+                    fontFamily: 'monospace',
+                  }}
+                />
+                {(() => {
+                  const suggestions = aiProviderDef(aiProvider).suggestedModels;
+                  if (suggestions.length === 0) return null;
+                  return (
+                    <div style={{ marginTop: 6 }}>
+                      <Flex gap={6} style={{ flexWrap: 'wrap' }}>
+                        {suggestions.slice(0, 12).map(id => (
+                          <button
+                            key={id}
+                            onClick={() => setGhCopilotModel(id)}
+                            style={{
+                              padding: '2px 8px', borderRadius: 10, cursor: 'pointer', fontSize: 11,
+                              fontFamily: 'monospace',
+                              background: ghCopilotModel === id ? 'rgba(0,161,201,0.18)' : 'transparent',
+                              border: `1px solid ${ghCopilotModel === id ? 'rgba(0,161,201,0.5)' : Colors.Border.Neutral.Default}`,
+                              color: Colors.Text.Neutral.Default,
+                            }}
+                          >
+                            {id}
+                          </button>
+                        ))}
+                      </Flex>
+                      <Paragraph style={{ fontSize: 11, marginTop: 4, marginBottom: 0, opacity: 0.6 }}>
+                        Suggestions only. Any model your provider supports will work.
+                      </Paragraph>
+                    </div>
+                  );
+                })()}
               </div>
+
+              {/* Trace AI calls through the host */}
+              <div style={{
+                padding: 12, marginBottom: 16, borderRadius: 8,
+                background: 'rgba(0,161,201,0.06)', border: '1px solid rgba(0,161,201,0.2)',
+              }}>
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: aiProviderDef(aiProvider).alwaysViaVm ? 'not-allowed' : 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={aiRouteViaVm || aiProviderDef(aiProvider).alwaysViaVm}
+                    disabled={aiProviderDef(aiProvider).alwaysViaVm}
+                    onChange={(e: any) => setAiRouteViaVm(e.target.checked)}
+                    style={{ marginTop: 2 }}
+                  />
+                  <div>
+                    <Strong style={{ fontSize: 13 }}>Trace AI calls through the demo host</Strong>
+                    <Paragraph style={{ fontSize: 11, marginTop: 2, marginBottom: 0, opacity: 0.8, lineHeight: 1.5 }}>
+                      {aiProviderDef(aiProvider).alwaysViaVm
+                        ? 'Always on for Ollama, since it runs on the host and Dynatrace cannot reach it directly.'
+                        : 'Routes generation through the host so it emits OpenTelemetry GenAI spans. Turn this on to demo AI observability, off for the lowest latency and no host dependency.'}
+                    </Paragraph>
+                  </div>
+                </label>
+              </div>
+
+              {/* API key */}
+              {aiProviderDef(aiProvider).needsKey && (
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                    API key{ghCopilotConfigured ? ' (one is already stored, enter a new one to replace it)' : ''}
+                  </label>
+                  <Flex gap={8}>
+                    <input
+                      type="password"
+                      placeholder={aiProviderDef(aiProvider).keyHint}
+                      value={ghCopilotToken}
+                      onChange={(e: any) => setGhCopilotToken(e.target.value)}
+                      style={{
+                        flex: 1, padding: '8px 12px', borderRadius: 6,
+                        background: Colors.Background.Base.Default,
+                        border: `1px solid ${Colors.Border.Neutral.Default}`,
+                        color: Colors.Text.Neutral.Default, fontSize: 13,
+                        fontFamily: 'monospace',
+                      }}
+                    />
+                    <Button
+                      variant="emphasized"
+                      disabled={!ghCopilotToken.trim() || ghCopilotSaving}
+                      onClick={async () => {
+                        const def = aiProviderDef(aiProvider);
+                        if (def.needsBaseUrl && !aiBaseUrl.trim()) {
+                          setGhCopilotStatus('❌ Base URL is required for this provider.');
+                          return;
+                        }
+                        setGhCopilotSaving(true);
+                        setGhCopilotStatus('⏳ Saving key to Credential Vault...');
+                        try {
+                          const res = await callProxyWithRetry({
+                            action: 'ai-provider-save-key',
+                            apiHost: '', apiPort: '', apiProtocol: '',
+                            body: { provider: aiProvider, apiKey: ghCopilotToken.trim(), baseUrl: aiBaseUrl.trim() },
+                          });
+                          if (res.success) {
+                            setGhCopilotToken('');
+                            setGhCopilotConfigured(true);
+                            setAiProviderHost(String(res.data?.host || ''));
+                            setAiHostAllowed(res.data?.hostAllowed !== false);
+                            const saved = await persistAiConfig();
+                            setGhCopilotStatus(saved
+                              ? `✅ Key stored in Credential Vault${res.data?.host ? `, ${res.data.host} allowlisted` : ''}`
+                              : `⚠️ Key stored, but saving provider settings failed: ${getLastAppSettingsSaveError() || 'unknown error'}`);
+                            await refreshAiProviderStatus();
+                          } else {
+                            setGhCopilotStatus(`❌ ${res.error}`);
+                          }
+                        } catch (err: any) {
+                          setGhCopilotStatus(`❌ ${err.message}`);
+                        }
+                        setGhCopilotSaving(false);
+                      }}
+                    >
+                      {ghCopilotSaving ? '⏳ Saving...' : '🔐 Save to Vault'}
+                    </Button>
+                  </Flex>
+                  {aiProviderDef(aiProvider).keyUrl && (
+                    <Paragraph style={{ fontSize: 11, marginTop: 4, marginBottom: 0, opacity: 0.7 }}>
+                      Create a key at{' '}
+                      <a
+                        href={aiProviderDef(aiProvider).keyUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ color: Colors.Theme.Primary['70'] }}
+                      >
+                        {aiProviderDef(aiProvider).keyUrl}
+                      </a>
+                    </Paragraph>
+                  )}
+                </div>
+              )}
+
+              {/* Save config / refresh */}
+              <Flex gap={8} style={{ marginBottom: 16 }}>
+                <Button
+                  variant="emphasized"
+                  disabled={aiConfigSaving}
+                  onClick={async () => {
+                    const def = aiProviderDef(aiProvider);
+                    if (def.needsBaseUrl && !aiBaseUrl.trim()) {
+                      setGhCopilotStatus('❌ Base URL is required for this provider.');
+                      return;
+                    }
+                    setAiConfigSaving(true);
+                    setGhCopilotStatus('⏳ Saving provider settings...');
+                    try {
+                      const saved = await persistAiConfig();
+                      setGhCopilotStatus(saved
+                        ? '✅ Provider settings saved for everyone on this tenant'
+                        : `❌ Save failed: ${getLastAppSettingsSaveError() || 'unknown error'}`);
+                      if (saved) await refreshAiProviderStatus();
+                    } catch (err: any) {
+                      setGhCopilotStatus(`❌ ${err.message}`);
+                    }
+                    setAiConfigSaving(false);
+                  }}
+                >
+                  {aiConfigSaving ? '⏳ Saving...' : '💾 Save configuration'}
+                </Button>
+                <Button
+                  variant="default"
+                  disabled={ghCopilotChecking}
+                  onClick={() => { void refreshAiProviderStatus(); }}
+                >
+                  {ghCopilotChecking ? '⏳ Checking...' : '🔄 Refresh status'}
+                </Button>
+              </Flex>
 
               {/* Status message */}
               {ghCopilotStatus && (
@@ -6380,34 +6655,17 @@ export const HomePage = () => {
                 </div>
               )}
 
-              {/* Model selector */}
-              <div style={{ marginBottom: 16 }}>
-                <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>AI Model</label>
-                <select
-                  value={ghCopilotModel}
-                  onChange={(e: any) => setGhCopilotModel(e.target.value)}
-                  style={{
-                    width: '100%', padding: '8px 12px', borderRadius: 6,
-                    background: Colors.Background.Base.Default,
-                    border: `1px solid ${Colors.Border.Neutral.Default}`,
-                    color: Colors.Text.Neutral.Default, fontSize: 13,
-                    cursor: 'pointer',
-                  }}
-                >
-                  {ghAvailableModels.length > 0
-                    ? ghAvailableModels.map(m => (
-                        <option key={m.id} value={m.id}>{m.id}{m.owned_by ? ` (${m.owned_by})` : ''}</option>
-                      ))
-                    : ['gpt-4.1'].map(id => (
-                        <option key={id} value={id}>{id}</option>
-                      ))
-                  }
-                </select>
-                <Paragraph style={{ fontSize: 11, marginTop: 4, marginBottom: 0, opacity: 0.6 }}>
-                  {ghAvailableModels.length > 0
-                    ? `${ghAvailableModels.length} models available via GitHub Copilot`
-                    : 'Save a valid PAT with copilot scope to enable AI generation'}
-                </Paragraph>
+              {/* Where things are stored */}
+              <div style={{
+                padding: 12, borderRadius: 8,
+                background: 'rgba(255,255,255,0.03)', border: `1px solid ${Colors.Border.Neutral.Default}`,
+              }}>
+                <Strong style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>Where this is stored</Strong>
+                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, lineHeight: 1.7, opacity: 0.8 }}>
+                  <li>API key: Dynatrace Credential Vault, as <code>bizobs-ai-provider-key</code>.</li>
+                  <li>Provider, model, base URL, tracing: the shared app settings document, so the whole team sees the same config.</li>
+                  <li>An existing <code>bizobs-github-pat</code> credential is still honoured if no provider key is set, so older setups keep working.</li>
+                </ul>
               </div>
             </div>
             )}
@@ -8450,14 +8708,14 @@ export const HomePage = () => {
                   </Flex>
                 </div>
 
-                {/* Step: GitHub Copilot Outbound Allowlist */}
+                {/* Step: AI Provider Outbound Allowlist */}
                 <div onClick={() => toggleCheck('outbound-github-models')} style={{ padding: '12px 14px', borderRadius: 10, border: `1px solid ${isStepComplete('outbound-github-models') ? 'rgba(0,180,0,0.3)' : Colors.Border.Neutral.Default}`, background: isStepComplete('outbound-github-models') ? 'rgba(0,180,0,0.04)' : 'transparent', cursor: 'pointer', marginBottom: 8, transition: 'all 0.2s' }}>
                   <Flex alignItems="center" gap={12}>
                     <div style={{ width: 24, height: 24, borderRadius: 6, border: `2px solid ${isStepComplete('outbound-github-models') ? '#2e7d32' : Colors.Border.Neutral.Default}`, background: isStepComplete('outbound-github-models') ? '#2e7d32' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.2s' }}>
                       {isStepComplete('outbound-github-models') && <span style={{ color: 'white', fontSize: 14, fontWeight: 700 }}>✓</span>}
                     </div>
                     <div style={{ flex: 1 }}>
-                      <Strong style={{ fontSize: 13, textDecoration: isStepComplete('outbound-github-models') ? 'line-through' : 'none', opacity: isStepComplete('outbound-github-models') ? 0.6 : 1 }}>GitHub Copilot Outbound Allowed</Strong>
+                      <Strong style={{ fontSize: 13, textDecoration: isStepComplete('outbound-github-models') ? 'line-through' : 'none', opacity: isStepComplete('outbound-github-models') ? 0.6 : 1 }}>AI Provider Outbound Allowed</Strong>
                       <div style={{ fontSize: 11, opacity: 0.6, marginTop: 2 }}>Allow models.inference.ai.azure.com in AppEngine outbound connections for AI generation</div>
                       {isStepComplete('outbound-github-models') && <div style={{ fontSize: 10, marginTop: 3, color: '#2e7d32' }}>✅ Detected</div>}
                     </div>
@@ -9040,21 +9298,16 @@ export const HomePage = () => {
                       cursor: 'pointer', minWidth: 120,
                     }}
                   >
-                    {ghAvailableModels.length > 0
-                      ? ghAvailableModels.map(m => (
-                          <option key={m.id} value={m.id}>{m.id}</option>
-                        ))
-                      : ['gpt-4.1'].map(id => (
-                          <option key={id} value={id}>{id}</option>
-                        ))
-                    }
+                    {aiModelOptions.map(id => (
+                      <option key={id} value={id}>{id}</option>
+                    ))}
                   </select>
                 )}
                 <Button
                   variant="accent"
                   disabled={!selectedJourneyName || !pastedAiResponse || pastedAiResponse.length < 50 || !ghCopilotConfigured}
                   onClick={() => runPastedAiPipeline(pastedAiResponse, selectedJourneyName)}
-                  title={!ghCopilotConfigured ? 'Configure GitHub PAT in Settings first' : `Generate "${selectedJourneyName}" config`}
+                  title={!ghCopilotConfigured ? 'Configure an AI provider in Settings first' : `Generate "${selectedJourneyName}" config`}
                   style={{
                     padding: '10px 24px', fontWeight: 700, fontSize: 14,
                     background: ghCopilotConfigured && selectedJourneyName ? 'linear-gradient(135deg, rgba(108,44,156,0.9), rgba(0,161,201,0.9))' : undefined,

@@ -111,22 +111,22 @@ echo "  Installing system packages..."
 $PKG_INSTALL git curl tar gzip 2>&1 | tail -1 || true
 ok "System packages"
 
-# Node.js 20 (LTS)
+# Node.js 22 (LTS) — must match the floor enforced by setup.sh
 if command -v node &>/dev/null; then
   NODE_VER=$(node --version | sed 's/v//' | cut -d. -f1)
-  if [[ "$NODE_VER" -ge 18 ]]; then
+  if [[ "$NODE_VER" -ge 22 ]]; then
     ok "Node.js $(node --version) already installed"
   else
-    warn "Node.js too old, upgrading..."
-    curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - 2>/dev/null \
-      || (curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -) 2>/dev/null
+    warn "Node.js $(node --version) is below the required v22, upgrading..."
+    curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash - 2>/dev/null \
+      || (curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -) 2>/dev/null
     $PKG_INSTALL nodejs
     ok "Node.js $(node --version) installed"
   fi
 else
-  echo "  Installing Node.js 20..."
-  curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - 2>/dev/null \
-    || (curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -) 2>/dev/null
+  echo "  Installing Node.js 22..."
+  curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash - 2>/dev/null \
+    || (curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -) 2>/dev/null
   $PKG_INSTALL nodejs 2>&1 | tail -2
   ok "Node.js $(node --version) installed"
 fi

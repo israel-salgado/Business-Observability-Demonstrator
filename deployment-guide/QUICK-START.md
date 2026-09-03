@@ -23,20 +23,27 @@ On top of the server, you're deploying a Dynatrace AppEngine UI so partners can 
 
 ## What You Need Before You Start
 
-- A Linux server (EC2, Azure VM, GCP — **8 GB RAM recommended**, see sizing below)
-- A Dynatrace environment (SaaS with AppEngine/DPS license)
-- About 20–30 minutes
+- **A Linux machine that's already running**, which you can SSH into with `sudo`. Anywhere is
+  fine: a Proxmox or vSphere VM, EC2, Azure, GCP, or even a VM on your laptop. This is not a
+  cloud setup tool, so there's nothing to provision.
+- A Dynatrace environment (SaaS with AppEngine/DPS licence)
+- About 20 to 30 minutes
 
 ### Server Sizing Quick Reference
 
-| Cloud | Instance | RAM | Notes |
-|---|---|---|---|
-| **AWS** | `t3.large` | 8 GB | Recommended — good balance |
-| **AWS** | `t3.medium` | 4 GB | Works for Lite mode (no Ollama) |
-| **Azure** | `Standard_B2ms` | 8 GB | Recommended |
-| **GCP** | `e2-standard-2` | 8 GB | Recommended |
+| Setup | vCPU | RAM | Disk |
+|---|---:|---:|---:|
+| **Default** (cloud AI provider) | 2 | 4 GB | 20 GB |
+| **With local Ollama** | 4 | 8 GB | 40 GB |
 
-You need at least 4 GB of RAM. If running in Full mode, Ollama loads the LLM model into memory so 8 GB is recommended. In Lite mode (no Ollama), 4 GB is plenty. Disk-wise, 20 GB is comfortable.
+4 GB is the floor. AI generation runs against a cloud provider you configure in the app, so you
+only need 8 GB if you specifically want local models. Cloud equivalents of the default profile:
+AWS `t3.medium`, Azure `Standard_B2s`, GCP `e2-medium`.
+
+**OS:** any Linux with systemd and `dnf`/`yum`/`apt`. Verified on Ubuntu 22.04+, Debian 12+, and
+Amazon Linux 2023. RHEL, Rocky, and AlmaLinux work once you add the Docker CE repo.
+
+**Network:** outbound HTTPS only. No inbound ports, no public IP, no port forwarding.
 
 ---
 
@@ -74,18 +81,31 @@ If you'd rather do it step by step (or something went wrong), here's the manual 
 
 ### 1. Get Node.js on the box
 
-You need Node 18 or newer. If you're on Amazon Linux:
+You need Node 22 or newer. If you're on Amazon Linux, RHEL, Rocky, or Alma:
 
 ```bash
-curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
-sudo yum install -y nodejs
+curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash -
+sudo dnf install -y nodejs   # or: sudo yum install -y nodejs
+```
+
+On Ubuntu or Debian:
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
 ```
 
 Check it worked with `node --version`.
 
-### 2. Install Ollama (the local AI engine) — *skip if using Lite mode*
+### 2. Install Ollama (optional, for local models only)
 
-> **Lite mode?** If you used `--skip-ollama` or want to run without AI, skip this entire step. Set `OLLAMA_MODE=disabled` in your `.env` file and jump to Step 3.
+> **Most people should skip this step.** AI generation runs against a cloud provider you configure
+> in the app under **Settings → AI Provider** (OpenAI, Anthropic, Azure OpenAI, GitHub Models, or
+> any OpenAI-compatible gateway). Ollama is only needed if you specifically want to demo local
+> open-source models. Skipping it keeps you at 4 GB RAM instead of 8 GB.
+>
+> If you skip it, set `OLLAMA_MODE=disabled` in `.env` and jump to Step 3. `setup.sh` and
+> `deploy.sh` now detect this and write the correct value for you.
 
 Ollama runs LLM models locally on your server. One command:
 
@@ -93,16 +113,19 @@ Ollama runs LLM models locally on your server. One command:
 curl -fsSL https://ollama.com/install.sh | sh
 ```
 
-Start it up and pull the model the app uses:
+Start it up and pull the model the app expects:
 
 ```bash
 sudo systemctl enable ollama && sudo systemctl start ollama
-ollama pull llama3.2
+ollama pull llama3.2:1b
 ```
 
-This downloads about 2 GB. If your server is small on memory, use `ollama pull qwen2:1.5b` instead (smaller model, ~1 GB).
+`llama3.2:1b` is ~1 GB and is what the scripts and `.env` default to, chosen for CPU-only
+inference. Larger variants like `llama3.2` (~2 GB) work too, but set `OLLAMA_MODEL` in `.env` to
+match whatever you pulled, or the app won't find it.
 
-The app will still work without Ollama — it falls back to rule-based logic instead of AI. If you're running in Lite mode, that's by design.
+Without Ollama the app still works: AI agents fall back to rule-based logic and dashboards fall
+back to templates.
 
 ### 3. Get the app code
 

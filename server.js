@@ -236,10 +236,17 @@ async function saveDtCredentialsToFile() {
 // ============================================
 // Ollama Mode Configuration
 // ============================================
-// OLLAMA_MODE: 'full' (default) = use Ollama for AI features
-//              'disabled' = skip Ollama, use rule-based/template fallbacks
-const OLLAMA_MODE = (process.env.OLLAMA_MODE || 'full').toLowerCase();
+// OLLAMA_MODE: 'auto' (default) = use Ollama only if it's actually reachable
+//              'full'           = require Ollama (warn loudly if it's missing)
+//              'disabled'       = never call Ollama, use rule-based/template fallbacks
+//
+// 'auto' is the default so a host that never installed Ollama degrades to templates
+// instead of failing every AI call against a dead localhost:11434. Cloud AI providers
+// configured in the app's Settings are unaffected by this setting.
+const OLLAMA_MODE = (process.env.OLLAMA_MODE || 'auto').toLowerCase();
 global.ollamaMode = OLLAMA_MODE;
+
+const OLLAMA_PROBE_ENDPOINT = process.env.OLLAMA_ENDPOINT || 'http://localhost:11434';
 
 if (OLLAMA_MODE === 'disabled') {
   console.log('[Ollama] 🚫 OLLAMA_MODE=disabled — AI features will use rule-based fallbacks');
@@ -247,7 +254,25 @@ if (OLLAMA_MODE === 'disabled') {
   console.log('[Ollama]    Chaos agent: random selection');
   console.log('[Ollama]    Fix-It agent: rule-based diagnosis');
 } else {
-  console.log('[Ollama] 🤖 OLLAMA_MODE=full — AI features powered by Ollama LLM');
+  // Startup banner only. The authoritative availability check is
+  // checkOllamaAvailable() in routes/ai-dashboard.js, which also verifies the
+  // model is pulled. Probed in the background so a missing Ollama never blocks boot.
+  fetch(`${OLLAMA_PROBE_ENDPOINT}/api/tags`, { signal: AbortSignal.timeout(2000) })
+    .then((resp) => resp.ok)
+    .catch(() => false)
+    .then((reachable) => {
+      if (reachable) {
+        console.log(`[Ollama] 🤖 Ollama reachable at ${OLLAMA_PROBE_ENDPOINT} — local LLM features enabled`);
+      } else if (OLLAMA_MODE === 'full') {
+        console.warn(`[Ollama] ⚠️  OLLAMA_MODE=full but nothing is listening on ${OLLAMA_PROBE_ENDPOINT}`);
+        console.warn('[Ollama]    Install it:  curl -fsSL https://ollama.com/install.sh | sh && ollama pull llama3.2:1b');
+        console.warn('[Ollama]    Or set OLLAMA_MODE=disabled in .env to use template fallbacks instead.');
+      } else {
+        console.log(`[Ollama] ℹ️  No Ollama at ${OLLAMA_PROBE_ENDPOINT} — using rule-based/template fallbacks`);
+        console.log('[Ollama]    This is fine. Configure a cloud AI provider in the app under Settings → AI Provider,');
+        console.log('[Ollama]    or install Ollama for local-model demos.');
+      }
+    });
 }
 
 // ============================================

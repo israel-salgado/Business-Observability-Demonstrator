@@ -84,33 +84,53 @@ Before you start, make sure you have **all of these** ready. Items marked with �
 | 2 | **Dynatrace API Token** | — | Demonstrator server sends events to DT | Create in DT: Settings → Access Tokens → Generate. Scopes: `events.ingest`, `metrics.ingest`, `openTelemetryTrace.ingest`, `entities.read` |
 | 3 | **EdgeConnect OAuth Client** | — | Authenticates the EdgeConnect tunnel | Create in DT: Settings → General → External Requests → Add EdgeConnect. DT generates the OAuth client ID, secret, and resource. |
 | 4 | **AppEngine Deploy OAuth Client** | — | Deploys the Demonstrator UI to Dynatrace AppEngine | Create in Account Management → IAM → OAuth clients. Scopes: `app-engine:apps:install`, `app-engine:apps:run`. Can reuse the EdgeConnect client if you add these scopes to it. |
-| 5 | **EC2 / VM / Host** | Linux recommended | Runs the Demonstrator server | SSH access, ports 8080–8200 open in Security Group (inbound not strictly required — EdgeConnect tunnels inbound) |
+| 5 | **A running Linux host** | See the host contract below | Runs the Demonstrator server | SSH access plus `sudo`. **No inbound ports required** — EdgeConnect tunnels inbound over an outbound connection |
 | 6 | ⚙️ **Node.js** | v22+ | Server runtime — **installed by setup.sh** | `node --version` |
 | 7 | ⚙️ **Docker** | Latest | Runs EdgeConnect — **installed by setup.sh** | `docker --version` |
-| 8 | **Dynatrace OneAgent** | Latest | Auto-instruments every child service | `sudo systemctl status oneagent` or check Hosts in DT UI |
-| 9 | **Ollama** | Latest | Powers AI agents (Nemesis, Fix-It, Librarian) and dashboard generation | `ollama list` → should show `llama3.2:1b` |
-| 10 | **GitHub PAT** | — | Powers AI journey generation (GitHub Models) | Configure in Demonstrator UI → Settings → Copilot tab |
+| 8 | **Dynatrace OneAgent** *(optional)* | Latest | Auto-instruments the host and every child service | `sudo systemctl status oneagent` or check Hosts in DT UI |
+| 9 | **Ollama** *(optional)* | Latest | Local-model demos and the AI agents. Skip it and use a cloud provider instead | `ollama list` → should show `llama3.2:1b` |
+| 10 | **An AI provider key** | — | Powers AI journey and dashboard generation | Configure in Demonstrator UI → Settings → **AI Provider**. OpenAI, Anthropic, Azure OpenAI, GitHub Models, any OpenAI-compatible gateway, or local Ollama |
+
+### The Host Contract (assumed starting state)
+
+This tool does **not** provision infrastructure. It assumes you already have a Linux machine
+running. Cloud, hypervisor, and bare metal are all equivalent: EC2, Azure, GCP, Proxmox, vSphere,
+a laptop VM, or a Codespace all behave the same, because the only network requirement is outbound.
+
+| | Requirement |
+|---|---|
+| **OS** | Any Linux with `systemd` and one of `dnf`, `yum`, or `apt`. Verified on **Ubuntu 22.04+**, **Debian 12+**, **Amazon Linux 2023** |
+| **RHEL family** | RHEL / Rocky / AlmaLinux work, but they ship Podman rather than Docker. Add the Docker CE repo first; `setup.sh` fails with the exact commands if it detects this |
+| **Arch** | x86_64 or arm64 (armv7l also handled by the Node fallback) |
+| **Privileges** | `sudo`. Passwordless is preferred: without it, the systemd unit and log guard steps are skipped and the server runs under `nohup` with a PID file instead |
+| **Network** | Outbound HTTPS (443) to your tenant, `sso.dynatrace.com`, Docker Hub, and nodesource. **Zero inbound.** |
 
 ### Recommended Server Size
 
-Use these sizes as a practical baseline for this app:
-
-| Deployment Profile | vCPU | RAM | Storage | Notes |
+| Profile | vCPU | RAM | Storage | When to use |
 |---|---:|---:|---:|---|
-| **Minimum (demo / light use)** | 2 | 8 GB | 40 GB SSD | Good for short demos and low concurrency |
-| **Recommended (default for customer demos)** | 4 | 16 GB | 80 GB SSD | Best balance for journey simulation + AI features + OTel export |
-| **High-load (multiple concurrent users/journeys)** | 8 | 32 GB | 120 GB SSD | Use when running many child services and frequent AI generation |
+| **Default (cloud AI provider)** | 2 | 4 GB | 20 GB | Standard. No local model, so RAM stays low |
+| **Local models (Ollama)** | 4 | 8 GB | 40 GB | Ollama loads `llama3.2:1b` into memory |
+| **High-load** | 8 | 16 GB | 80 GB | Many concurrent journeys, child services, and frequent AI generation |
 
-**Default recommendation:** use at least **4 vCPU / 16 GB RAM / 80 GB SSD**.
+**Default recommendation:** **2 vCPU / 4 GB RAM / 20 GB disk.** That's the floor because AI
+generation now runs against a cloud provider by default rather than a local LLM.
 
-**If using local Ollama heavily:** prioritize RAM. For larger local models, plan for **24–32 GB RAM**.
+**If using local Ollama heavily:** prioritize RAM. For larger local models, plan for **16-32 GB**.
+
+> **Why the main server is capped:** the systemd unit sets `MemoryHigh=1400M` / `MemoryMax=2048M`
+> with a 768 MB heap, and each child service is capped at a 128 MB heap. That's what keeps a 4 GB
+> host viable.
 
 > **Don't have a Dynatrace API Token yet?** Stop here and create one. Nothing will work without it.
 
 **✅ What you MUST have before setup:**
-- Items 1–5 (Dynatrace tenant, credentials, host with SSH access)
-- Item 8 (OneAgent — usually pre-installed on production hosts, but optional for demos)
-- Items 9–10 (optional — Ollama and GitHub PAT for AI features)
+- Items 1–5 (Dynatrace tenant, credentials, and a running Linux host with SSH access)
+
+**🔧 Optional, add whenever you like:**
+- Item 8 (OneAgent, for host and process instrumentation)
+- Item 9 (Ollama, only for local-model demos)
+- Item 10 (an AI provider key, needed for AI generation. Add it in the app after setup)
 
 **❌ What you DON'T need to install beforehand (setup.sh handles it):**
 - ⚙️ **Node.js** — setup.sh installs v22+ automatically
@@ -530,10 +550,10 @@ The Dynatrace AppEngine app has 8 routes:
 | **Solutions** | `/solutions` | 55+ industry verticals with Dynatrace capability mapping, clickable demo journeys |
 
 > **Note:** The Home page has two separate pathways from the Welcome screen:
-> - **AI Pathway** (requires GitHub PAT): Welcome → Customer Details → Generate with AI (automated pipeline with journey picker)
+> - **AI Pathway** (requires a configured AI provider): Welcome → Customer Details → Generate with AI (automated pipeline with journey picker)
 > - **Manual Pathway**: Welcome → Customer Details → Generate Prompts (copy/paste to external AI)
 >
-> The AI pathway card is greyed out if no GitHub PAT is configured. Clicking it opens Settings → Copilot tab. Chaos control is also accessible via the Nemesis modal on the Home page. Active Journeys shows running services and their status.
+> The AI pathway card is greyed out until an AI provider is configured. Clicking it opens Settings → **AI Provider**. Chaos control is also accessible via the Nemesis modal on the Home page. Active Journeys shows running services and their status.
 
 > 📸 **Screenshot: Chaos Control Page** — *The Demonstrator UI Chaos Control page showing: the service selector dropdown with a healthcare service selected, the chaos type picker (enable_errors, slow_responses, etc.), the intensity slider, and below it the "Active Faults" list showing one or two injected faults with their target service, type, and a "Revert" button.*
 
@@ -542,7 +562,7 @@ The Dynatrace AppEngine app has 8 routes:
 ```
 Welcome Tab (Two Pathways)
      │
-     ├── AI Pathway (GitHub Models — requires GitHub PAT)
+     ├── AI Pathway (configured AI provider: OpenAI, Anthropic, Azure, GitHub Models, or Ollama)
      │   └── Customer Details → Generate with AI
      │       ├── Automated pipeline: C-Suite prompt → Journey extraction
      │       ├── Journey Picker Modal (select from AI-suggested journeys)
@@ -601,8 +621,8 @@ Welcome Tab (Two Pathways)
 | **No services in Dynatrace** | OneAgent not installed or feature flags not enabled | Run Get Started checklist in Demonstrator UI — deploy OneAgent Feature Flags step |
 | **Demonstrator UI shows "Connection failed"** | Server IP not configured or EdgeConnect not tunneling | Settings → Config tab → set private IP + Test. Settings → EdgeConnect tab → verify green |
 | **Chaos injection sends 200+ events** | `entitySelector` too broad (old bug) | Fixed in v2.9.10+ — now scoped to target service name |
-| **AI agents don't respond** | Ollama not running or model not pulled | `ollama pull llama3.2:1b` and `curl http://localhost:11434/api/tags` to verify |
-| **AI generation fails** | GitHub PAT not configured or expired | Configure in Demonstrator UI → Settings → Copilot tab. Ensure PAT has access to GitHub Models |
+| **AI agents don't respond** | Ollama not running or model not pulled | Optional feature. Either `ollama pull llama3.2:1b` then set `OLLAMA_MODE=full` in `.env`, or leave `OLLAMA_MODE=disabled` and use template fallbacks. Verify with `curl http://localhost:11434/api/tags` |
+| **AI generation fails** | No AI provider configured, or the key is invalid/expired | Configure in Demonstrator UI → Settings → **AI Provider**. Pick a provider, enter a key, and Save to Vault. The provider host is allowlisted automatically |
 | **`npx dt-app deploy` fails** | Missing credentials, wrong scope, or wrong directory | Re-run `sudo ./setup.sh` (it sets credentials automatically). Ensure the OAuth client has `app-engine:apps:install` + `app-engine:apps:run` scopes (Step 2B). Run from project root, not `edgeconnect/` |
 | **Settings won't save (400 error)** | Sprint environment app-settings API limitation | App falls back to localStorage automatically — safe to ignore |
 | **`api_endpoint_host` rejected** | Using tenant URL instead of AppEngine URL | Use `YOUR_TENANT.sprint.apps.dynatracelabs.com` (with `.apps.`), not `YOUR_TENANT.sprint.dynatracelabs.com` |
