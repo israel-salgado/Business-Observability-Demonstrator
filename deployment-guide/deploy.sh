@@ -216,7 +216,15 @@ cd "$APP_DIR"
 step 4 "Installing dependencies & building"
 
 echo "  Running npm install (this may take a minute)..."
-npm install --loglevel=warn 2>&1 | tail -3
+# --legacy-peer-deps is required: the root pins react-is@^19 while
+# @dynatrace/strato-components peer-depends on react-is@^18, so a plain
+# npm install dies with ERESOLVE. setup.sh does the same.
+# PIPESTATUS is checked because piping into tail would otherwise report
+# tail's exit status, hiding the failure from `set -e`.
+npm install --legacy-peer-deps --loglevel=warn 2>&1 | tail -3
+if [[ "${PIPESTATUS[0]}" -ne 0 ]]; then
+  fail "npm install failed. Re-run with: npm install --legacy-peer-deps"
+fi
 ok "npm install complete"
 
 echo "  Building TypeScript agents..."

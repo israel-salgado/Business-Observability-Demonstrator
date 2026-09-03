@@ -426,9 +426,16 @@ export default async function (payload: ProxyPayload) {
     await ensureOutboundHost(def.host || hostOf(base));
 
     // ── One attempt against one model with one token/timeout profile ──
-    type AttemptOutcome =
-      | { ok: true; data: any }
-      | { ok: false; status: number; message: string; timedOut: boolean };
+    // Deliberately one flat shape rather than a discriminated union: this
+    // tsconfig doesn't enable strict, so truthiness narrowing on a boolean
+    // discriminant won't narrow the union and every field access errors.
+    interface AttemptOutcome {
+      ok: boolean;
+      data?: any;
+      status: number;
+      message: string;
+      timedOut: boolean;
+    }
 
     const attempt = async (attemptModel: string, attemptMaxTokens: number, timeoutMs: number): Promise<AttemptOutcome> => {
       const started = Date.now();
@@ -448,6 +455,9 @@ export default async function (payload: ProxyPayload) {
           const usage = json?.usage || {};
           return {
             ok: true,
+            status: resp.status,
+            message: '',
+            timedOut: false,
             data: { content, model: json?.model || attemptModel, usage, genai: { system: def.system, model: json?.model || attemptModel, promptTokens: usage.input_tokens || 0, completionTokens: usage.output_tokens || 0, durationMs: Date.now() - started, finishReason: json?.stop_reason || 'stop' } },
           };
         }
@@ -466,6 +476,9 @@ export default async function (payload: ProxyPayload) {
         const usage = json?.usage || {};
         return {
           ok: true,
+          status: resp.status,
+          message: '',
+          timedOut: false,
           data: { content, model: json?.model || attemptModel, usage, genai: { system: def.system, model: json?.model || attemptModel, promptTokens: usage.prompt_tokens || 0, completionTokens: usage.completion_tokens || 0, durationMs: Date.now() - started, finishReason: json?.choices?.[0]?.finish_reason || 'stop' } },
         };
       } catch (e: any) {

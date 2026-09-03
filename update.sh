@@ -160,13 +160,25 @@ fi
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 echo -e "\n${CYAN}${BOLD}[2/5]${NC} ${BOLD}Checking dependencies${NC}"
 
+# --legacy-peer-deps is required: the root pins react-is@^19 while
+# @dynatrace/strato-components peer-depends on react-is@^18, so a plain
+# npm install dies with ERESOLVE. setup.sh does the same.
+# PIPESTATUS is checked because piping into tail would otherwise report
+# tail's exit status and hide the failure.
+run_npm_install() {
+  npm install --legacy-peer-deps --loglevel=warn 2>&1 | tail -3
+  if [[ "${PIPESTATUS[0]}" -ne 0 ]]; then
+    fail "npm install failed. Re-run with: npm install --legacy-peer-deps"
+  fi
+}
+
 if [[ "$BEFORE" != "$AFTER" ]] && git diff --name-only "${BEFORE}" "${AFTER}" 2>/dev/null | grep -q "package.json"; then
   echo "  package.json changed — running npm install..."
-  npm install --loglevel=warn 2>&1 | tail -3
+  run_npm_install
   ok "Dependencies updated"
 elif [[ ! -d node_modules ]]; then
   echo "  node_modules missing — running npm install..."
-  npm install --loglevel=warn 2>&1 | tail -3
+  run_npm_install
   ok "Dependencies installed"
 else
   ok "Dependencies up to date (no package.json changes)"
