@@ -123,34 +123,65 @@ else
   fi
 
   # ── 1b. The EdgeConnect ──
-  EC_TOKEN="$(get_token 'app-engine:edge-connects:write app-engine:edge-connects:read')"
+  #
+  # The list endpoint returns ONLY ids. name and hostPatterns come back null, so
+  # filtering the list by name matches nothing, deletes nothing, and reports
+  # "no EdgeConnect found" while it is sitting right there — leaving a
+  # configuration that collides with the next install. Each id has to be
+  # fetched individually.
   EC_NAME="${EDGECONNECT_NAME:-bizobs-demonstrator}"
-  if [ -n "$EC_TOKEN" ]; then
+  EC_READ_TOKEN="$(get_token 'app-engine:edge-connects:read')"
+
+  if [ -n "$EC_READ_TOKEN" ]; then
     EC_API="$APPS_URL/platform/app-engine/edge-connect/v1/edge-connects"
-    EC_IDS="$(curl -s -H "Authorization: Bearer $EC_TOKEN" "$EC_API" 2>/dev/null | python3 -c "
+
+    EC_MATCH_IDS=""
+    for cand_id in $(curl -s -H "Authorization: Bearer $EC_READ_TOKEN" "$EC_API" 2>/dev/null | python3 -c "
 import json,sys
 try:
     d = json.load(sys.stdin)
 except Exception:
     sys.exit(0)
 for e in d.get('edgeConnects', d if isinstance(d, list) else []):
-    if e.get('name') == '${EC_NAME}':
+    if e.get('id'):
         print(e['id'])
+" 2>/dev/null); do
+      cand_name="$(curl -s -H "Authorization: Bearer $EC_READ_TOKEN" "$EC_API/$cand_id" 2>/dev/null | python3 -c "
+import json,sys
+try:
+    print(json.load(sys.stdin).get('name',''))
+except Exception:
+    pass
 " 2>/dev/null)"
-    if [ -n "$EC_IDS" ]; then
-      for id in $EC_IDS; do
-        CODE="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
-          -H "Authorization: Bearer $EC_TOKEN" "$EC_API/$id" 2>/dev/null)"
-        case "$CODE" in
-          2*) ok "Deleted EdgeConnect '$EC_NAME' ($id)" ;;
-          *)  warn "Could not delete EdgeConnect $id (HTTP $CODE) — remove it in Settings" ;;
-        esac
-      done
+      [ "$cand_name" = "$EC_NAME" ] && EC_MATCH_IDS="$EC_MATCH_IDS $cand_id"
+    done
+
+    if [ -n "$EC_MATCH_IDS" ]; then
+      # Deleting needs its own scope. Requested separately because Dynatrace SSO
+      # grants all-or-nothing: bundling it with read would fail the whole token
+      # request for a client that only has read.
+      EC_DEL_TOKEN="$(get_token 'app-engine:edge-connects:delete')"
+      if [ -n "$EC_DEL_TOKEN" ]; then
+        for id in $EC_MATCH_IDS; do
+          CODE="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+            -H "Authorization: Bearer $EC_DEL_TOKEN" "$EC_API/$id" 2>/dev/null)"
+          case "$CODE" in
+            2*) ok "Deleted EdgeConnect '$EC_NAME' ($id)" ;;
+            *)  warn "Could not delete EdgeConnect $id (HTTP $CODE) — remove it in Settings" ;;
+          esac
+        done
+      else
+        warn "Found EdgeConnect '$EC_NAME' but the OAuth client lacks"
+        warn "app-engine:edge-connects:delete, so it cannot be removed from here."
+        warn "Delete it manually or the next install will collide with it:"
+        echo -e "    ${BOLD}Settings → General → External requests → EdgeConnect tab${NC}"
+        for id in $EC_MATCH_IDS; do echo "      id: $id"; done
+      fi
     else
       ok "No EdgeConnect named '$EC_NAME' in the tenant"
     fi
   else
-    warn "No EdgeConnect permissions — remove '$EC_NAME' manually from"
+    warn "No EdgeConnect read permission — remove '$EC_NAME' manually from"
     warn "Settings → General → External requests → EdgeConnect tab"
   fi
 fi
