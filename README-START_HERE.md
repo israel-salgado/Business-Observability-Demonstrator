@@ -296,46 +296,56 @@ From the downloaded YAML, record:
 
 # Phase 2 — On the Linux machine
 
-> **Brief for now, to be expanded as we validate each step.**
-
-## 2.1 ⬜ Clone
+## 2.1 ⬜ One command
 
 ```bash
-git clone -b wip/test-updates \
-  https://github.com/israel-salgado/Business-Observability-Demonstrator.git
-cd Business-Observability-Demonstrator
+bash <(curl -fsSL https://raw.githubusercontent.com/israel-salgado/Business-Observability-Demonstrator/wip/test-updates/start.sh)
 ```
 
-**Use the `wip/test-updates` branch.** None of the Gen3 work is on `main` yet.
+That's it. It installs `git` and `curl` if missing, clones the repo, shows you the list of
+things it's about to ask for, waits for you to confirm, then hands off to `setup.sh` which
+prompts you for each value in turn.
 
-## 2.2 ⬜ Write your values into `setup.conf`
+> **Why `bash <(curl ...)` and not `curl ... | bash`?** With a pipe, the script's stdin *is*
+> the pipe, so interactive prompts get skipped or eat garbage. The process-substitution form
+> keeps your terminal attached. `start.sh` also re-attaches `/dev/tty` defensively, so the
+> pipe form works too, but this form is the reliable one.
 
-Rather than typing secrets into blind interactive prompts, put them in a file where you can
-proofread them first. This matters more if your tenant and your VM are on different networks.
+**Options**, if you need them:
 
 ```bash
-cp setup.conf.example setup.conf
-nano setup.conf
+BRANCH=main INSTALL_DIR=/opt/bizobs bash <(curl -fsSL .../start.sh)
 ```
 
-Fill in `ENV_TYPE`, `TENANT_ID`, `API_TOKEN` (use your **platform token** here),
-`DT_PLATFORM_TOKEN` (the same platform token), `EC_OAUTH_CLIENT_ID`,
-`EC_OAUTH_CLIENT_SECRET`. Leave the `DEPLOY_OAUTH_*` pair blank to reuse the EdgeConnect
-client, or fill it with the 1.4 client.
+## 2.2 ⬜ Answer the six prompts
 
-Leave the optional account-provisioning block empty.
+| # | Prompt | Value |
+|---|---|---|
+| 1 | Environment type | `1` for sprint, `2` for prod |
+| 2 | Tenant ID | the `abc12345` part of your URL |
+| 3 | Platform token | `dt0s16.…` from Phase 1.2 |
+| 4 | EdgeConnect OAuth Client ID | `oauth.client_id` from the downloaded YAML |
+| 5 | EdgeConnect OAuth Client Secret | `oauth.client_secret` from the same YAML |
+| 6 | App install OAuth client ID + secret | from Phase 1.4 |
 
-## 2.3 ⬜ Run setup
+The platform token is used for **both** telemetry ingest and dashboard deployment, so you're
+only asked for it once.
 
-```bash
-chmod +x setup.sh
-./setup.sh
-```
+Then it offers an optional block of account-provisioning fields. **Press Enter through all of
+them.** They're only for the self-service access-request feature.
 
-Six steps, unattended: Node 22 and Docker, `npm install`, credentials and `.env`, the
-EdgeConnect container, the app deploy to your tenant, then the server start.
+## 2.3 ⬜ Watch for these lines
 
-**Write down the private IP it prints at the end.** You need it in the app.
+Setup runs six unattended steps: Node 22 and Docker, `npm install`, credentials and `.env`,
+the EdgeConnect container, the app deploy, then the server start. Expect a few minutes.
+
+- `✓ No local Ollama (OLLAMA_MODE=disabled)` — correct, you didn't install it
+- `✓ EdgeConnect running` — the tunnel container is up
+- `✓ Demonstrator UI deployed` — the app is in your tenant
+- `✓ Server running on port 8080`
+
+**Write down the private IP it prints at the end.** It should match the host pattern you set
+in Phase 1.5.
 
 ## 2.4 ⬜ Sanity check
 
@@ -344,6 +354,22 @@ curl http://localhost:8080/api/health
 ```
 
 An empty `childServices` array is correct. Nothing spawns until you launch a journey.
+
+## Prefer a config file over prompts?
+
+If you'd rather proofread everything before it runs, which is easier when your tenant and VM
+are on different networks:
+
+```bash
+cd ~/Business-Observability-Demonstrator
+cp setup.conf.example setup.conf
+nano setup.conf          # fill it in
+./setup.sh               # runs non-interactively
+grep -c XXXX setup.conf  # must print 0 before you run
+```
+
+`API_TOKEN` and `DT_PLATFORM_TOKEN` both take the same platform token. Leave
+`DEPLOY_OAUTH_*` blank only if you accept that the app deploy will 403.
 
 ---
 

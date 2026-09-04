@@ -135,56 +135,57 @@ if [ "$NEED_PROMPT" = true ]; then
   prompt_if_missing "TENANT_ID" "Tenant ID:" "YOUR_TENANT_ID"
   echo ""
 
-  # 3. API Token
-  echo -e "  ${CYAN}─── 3/6: API Token ───${NC}"
-  echo -e "  ${YELLOW}Dynatrace → Settings → Access Tokens → Generate new token${NC}"
-  echo -e "  ${YELLOW}Scopes: events.ingest, metrics.ingest, openTelemetryTrace.ingest, entities.read${NC}"
-  echo -e "  ${YELLOW}Starts with: dt0c01.${NC}"
-  prompt_if_missing "API_TOKEN" "API Token:" "dt0c01.XXXX..."
+  # 3. Platform token (ingest + dashboards + settings)
+  echo -e "  ${CYAN}─── 3/6: Platform Token ───${NC}"
+  echo -e "  ${YELLOW}Account Management → Identity & access management → Platform tokens${NC}"
+  echo -e "  ${YELLOW}(myaccount.dynatrace.com — NOT your environment settings)${NC}"
+  echo -e "  ${YELLOW}This one token covers ingest, dashboards, settings and DQL.${NC}"
+  echo -e "  ${YELLOW}Key scopes: openpipeline:traces|metrics|logs|bizevents|events:ingest,${NC}"
+  echo -e "  ${YELLOW}            document:documents:read+write, settings:objects:read+write,${NC}"
+  echo -e "  ${YELLOW}            storage:buckets:read + the storage:*:read set${NC}"
+  echo -e "  ${YELLOW}Starts with: dt0s16.  (a legacy dt0c01. access token also still works)${NC}"
+  prompt_if_missing "API_TOKEN" "Platform Token:" "dt0s16.XXXX..."
   echo ""
 
-  # 4. DT Platform Token (for dtctl dashboard apply)
-  echo -e "  ${CYAN}─── 4/7: DT Platform Token (dtctl) ───${NC}"
-  echo -e "  ${YELLOW}Needed for bespoke dashboard deployment via dtctl.${NC}"
-  echo -e "  ${YELLOW}Use a platform token (typically dt0s16.*), not an ingest token.${NC}"
-  echo -e "  ${YELLOW}Minimum scopes:${NC}"
-  echo -e "  ${YELLOW}  • document:documents:write${NC}"
-  echo -e "  ${YELLOW}Recommended:${NC}"
-  echo -e "  ${YELLOW}  • document:documents:read${NC}"
-  echo -e "  ${YELLOW}Optional (only if you want environment-wide sharing):${NC}"
-  echo -e "  ${YELLOW}  • document:environment-shares:write${NC}"
-  echo -e "  ${YELLOW}Recommended:${NC}"
-  echo -e "  ${YELLOW}  • document:documents:read${NC}"
-  prompt_if_missing "DT_PLATFORM_TOKEN" "DT Platform Token:" "dt0s16.XXXX..."
-  echo ""
+  # 4. Same platform token is reused for dashboard deployment.
+  # Kept as a separate variable for back-compat with existing setup.conf files
+  # and for anyone who still wants to split ingest from dashboards.
+  if [ -z "$DT_PLATFORM_TOKEN" ] || [[ "$DT_PLATFORM_TOKEN" == *"XXXX"* ]]; then
+    DT_PLATFORM_TOKEN="$API_TOKEN"
+    ok "Reusing the same platform token for dashboard deployment"
+    echo ""
+  fi
 
   # 5. EdgeConnect OAuth Client ID
-  echo -e "  ${CYAN}─── 5/7: EdgeConnect OAuth Client ID ───${NC}"
-  echo -e "  ${YELLOW}Dynatrace → Settings → General → External Requests → Add EdgeConnect${NC}"
-  echo -e "  ${YELLOW}DT generates the OAuth credentials — copy the Client ID${NC}"
-  echo -e "  ${YELLOW}Starts with: dt0s10. or dt0s02. (depends on your tenant)${NC}"
-  echo -e "  ${YELLOW}Has scope: app-engine:edge-connects:connect (added automatically)${NC}"
+  echo -e "  ${CYAN}─── 4/6: EdgeConnect OAuth Client ID ───${NC}"
+  echo -e "  ${YELLOW}In your ENVIRONMENT (not Account Management):${NC}"
+  echo -e "  ${YELLOW}  Settings → General → External requests → EdgeConnect tab → + New EdgeConnect${NC}"
+  echo -e "  ${YELLOW}  Name it exactly:  bizobs-demonstrator${NC}"
+  echo -e "  ${YELLOW}  Host patterns:    this machine's private IP ($(hostname -I 2>/dev/null | awk '{print $1}'))${NC}"
+  echo -e "  ${YELLOW}Dynatrace generates a dedicated OAuth client. Download the YAML and copy${NC}"
+  echo -e "  ${YELLOW}oauth.client_id from it. Starts with dt0s10. or dt0s02.${NC}"
   prompt_if_missing "EC_OAUTH_CLIENT_ID" "EdgeConnect OAuth Client ID:" "dt0s10.XXXX"
   echo ""
 
   # 6. EdgeConnect OAuth Client Secret
-  echo -e "  ${CYAN}─── 6/7: EdgeConnect OAuth Client Secret ───${NC}"
-  echo -e "  ${YELLOW}Same page — shown only once when you create the EdgeConnect!${NC}"
-  echo -e "  ${YELLOW}Starts with same prefix as the ID (dt0s10. or dt0s02.)${NC}"
+  echo -e "  ${CYAN}─── 5/6: EdgeConnect OAuth Client Secret ───${NC}"
+  echo -e "  ${YELLOW}oauth.client_secret from the same downloaded YAML.${NC}"
+  echo -e "  ${YELLOW}Shown only once — a later re-download will NOT contain it.${NC}"
   prompt_if_missing "EC_OAUTH_CLIENT_SECRET" "EdgeConnect OAuth Client Secret:" "dt0s10.XXXX.YYYY..."
   echo ""
 
-  # 7. AppEngine Deploy OAuth (can be same or different)
-  echo -e "  ${CYAN}─── 7/7: AppEngine Deploy OAuth ───${NC}"
-  echo -e "  ${YELLOW}This deploys the Demonstrator UI to your Dynatrace Apps.${NC}"
-  echo -e "  ${YELLOW}Can be the SAME client as EdgeConnect (if you added deploy scopes to it)${NC}"
-  echo -e "  ${YELLOW}OR a different OAuth client. Accepts dt0s10 (env-level) or dt0s02 (account-level).${NC}"
-  echo -e "  ${YELLOW}Required scopes:${NC}"
-  echo -e "  ${YELLOW}  • app-engine:apps:install${NC}"
-  echo -e "  ${YELLOW}  • app-engine:apps:run${NC}"
-  echo -e "  ${YELLOW}Press Enter to use the same EdgeConnect client, or paste a different one.${NC}"
-  prompt_optional "DEPLOY_OAUTH_CLIENT_ID" "Deploy OAuth Client ID (Enter = same):" "EC_OAUTH_CLIENT_ID"
-  prompt_optional "DEPLOY_OAUTH_CLIENT_SECRET" "Deploy OAuth Client Secret (Enter = same):" "EC_OAUTH_CLIENT_SECRET"
+  # 7. AppEngine Deploy OAuth
+  echo -e "  ${CYAN}─── 6/6: App Install OAuth Client ───${NC}"
+  echo -e "  ${YELLOW}This installs the Demonstrator app into your tenant.${NC}"
+  echo -e "  ${YELLOW}Account Management → Identity & access management → OAuth clients${NC}"
+  echo -e "  ${YELLOW}  Grant type: Client credentials   Subject: an active user (your email)${NC}"
+  echo -e "  ${YELLOW}  Permissions: app-engine:apps:install and app-engine:apps:run${NC}"
+  echo -e "  ${RED}  NOTE: the EdgeConnect client above will NOT work here — it only has${NC}"
+  echo -e "  ${RED}  edge-connects:connect. You need a separate client for the app install.${NC}"
+  echo -e "  ${YELLOW}Press Enter to reuse the EdgeConnect client anyway (deploy will likely 403,${NC}"
+  echo -e "  ${YELLOW}but everything else still sets up and you can deploy the app later).${NC}"
+  prompt_optional "DEPLOY_OAUTH_CLIENT_ID" "App Install OAuth Client ID (Enter = reuse EC):" "EC_OAUTH_CLIENT_ID"
+  prompt_optional "DEPLOY_OAUTH_CLIENT_SECRET" "App Install OAuth Client Secret (Enter = reuse EC):" "EC_OAUTH_CLIENT_SECRET"
   echo ""
 
   echo -e "  ${CYAN}Optional: Access Request Auto-Provisioning (for /access-request.html)${NC}"
@@ -216,8 +217,11 @@ else
   fail "Ingest token must be a platform token (dt0s16.*) or a classic access token (dt0c01.*) — you entered '${API_TOKEN:0:10}...'. Delete setup.conf and re-run ./setup.sh"
 fi
 
-if [[ ! "$DT_PLATFORM_TOKEN" == dt0s*.* ]]; then
-  fail "DT Platform Token must be a platform token (expected dt0s*.*). Update setup.conf and re-run ./setup.sh"
+# Dashboard deployment credential. Normally the same platform token as above.
+# Falls back to API_TOKEN so a setup.conf that only supplies one token still works.
+[ -z "$DT_PLATFORM_TOKEN" ] && DT_PLATFORM_TOKEN="$API_TOKEN"
+if [[ ! "$DT_PLATFORM_TOKEN" == dt0s*.* ]] && [[ ! "$DT_PLATFORM_TOKEN" == dt0c01.* ]]; then
+  fail "DT Platform Token must be a platform token (dt0s16.*) or a classic access token (dt0c01.*). Update setup.conf and re-run ./setup.sh"
 fi
 
 # EdgeConnect OAuth — accepts dt0s10 (environment-level) or dt0s02 (account-level)
@@ -225,7 +229,7 @@ fi
 if [[ ! "$EC_OAUTH_CLIENT_ID" == dt0s10.* ]] && [[ ! "$EC_OAUTH_CLIENT_ID" == dt0s02.* ]]; then
   echo -e "  ${RED}✗ EdgeConnect OAuth Client ID must start with 'dt0s10.' or 'dt0s02.'${NC}"
   echo -e "  ${YELLOW}  You entered '${EC_OAUTH_CLIENT_ID:0:12}...'${NC}"
-  echo -e "  ${YELLOW}  Create it in: Dynatrace → Settings → General → External Requests → Add EdgeConnect${NC}"
+  echo -e "  ${YELLOW}  Create it in: Settings → General → External requests → EdgeConnect tab → + New EdgeConnect${NC}"
   echo -e "  ${YELLOW}  Delete setup.conf and re-run ./setup.sh${NC}"
   exit 1
 fi
