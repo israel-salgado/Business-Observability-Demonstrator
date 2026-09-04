@@ -320,7 +320,45 @@ else
   APPS_URL="https://${TENANT_ID}.sprint.apps.dynatracelabs.com"
   SSO_URL="https://sso-sprint.dynatracelabs.com/sso/oauth2/token"
 fi
-PRIVATE_IP=$(hostname -I | awk '{print $1}')
+# Work out this host's real LAN address, used as the EdgeConnect host pattern.
+#
+# `hostname -I | awk '{print $1}'` is not good enough. It lists every address in
+# interface-index order, so a Docker bridge, a compose network, or a VPN can sit
+# in first place and win. Getting this wrong is expensive to diagnose: the
+# EdgeConnect authenticates, the tunnel reports healthy, and traffic then dies
+# on the final hop from inside this host with nothing obviously broken.
+#
+# Primary: ask the kernel which source address it would use to reach the
+# internet. That is the interface carrying the default route, which is the
+# address the tenant should be pointed at.
+# Fallback: first address from `hostname -I` that is not on a known-virtual
+# range — Docker bridges (172.17-172.31), link-local (169.254), loopback.
+detect_private_ip() {
+  local ip=""
+
+  ip="$(ip route get 1.1.1.1 2>/dev/null | grep -oP '(?<=src )\d+(\.\d+){3}' | head -1)"
+  if [ -n "$ip" ]; then
+    printf '%s' "$ip"
+    return 0
+  fi
+
+  for candidate in $(hostname -I 2>/dev/null); do
+    case "$candidate" in
+      127.*|169.254.*) continue ;;
+      172.1[7-9].*|172.2[0-9].*|172.3[0-1].*) continue ;;   # docker/compose
+      *) printf '%s' "$candidate"; return 0 ;;
+    esac
+  done
+
+  # Everything was filtered out; fall back to the old behaviour rather than
+  # returning nothing.
+  hostname -I 2>/dev/null | awk '{print $1}'
+}
+
+PRIVATE_IP="$(detect_private_ip)"
+if [ -z "$PRIVATE_IP" ]; then
+  fail "Could not determine this host's IP address. Check 'ip route get 1.1.1.1' and 'hostname -I'."
+fi
 
 echo -e "  Tenant:     ${BOLD}$TENANT_URL${NC}"
 echo -e "  Private IP: ${BOLD}$PRIVATE_IP${NC}"

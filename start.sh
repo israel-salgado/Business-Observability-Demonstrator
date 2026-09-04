@@ -106,7 +106,21 @@ step "Next: setup.sh will ask you for 4 things"
 # Resolve the fallback text OUTSIDE the heredoc. Inside a ${VAR:-default}
 # expansion, a literal "<" is parsed as a redirection operator and bash fails
 # with "bad substitution", killing the script before it ever reaches setup.sh.
-PRIVATE_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+# Same detection setup.sh uses, kept in sync deliberately: this banner tells the
+# user which address the EdgeConnect will be pointed at, so showing a different
+# one than setup.sh actually uses would be worse than showing nothing.
+# Default-route source address first, then the first non-virtual address.
+PRIVATE_IP="$(ip route get 1.1.1.1 2>/dev/null | grep -oP '(?<=src )\d+(\.\d+){3}' | head -1)"
+if [ -z "$PRIVATE_IP" ]; then
+  for candidate in $(hostname -I 2>/dev/null); do
+    case "$candidate" in
+      127.*|169.254.*) continue ;;
+      172.1[7-9].*|172.2[0-9].*|172.3[0-1].*) continue ;;
+      *) PRIVATE_IP="$candidate"; break ;;
+    esac
+  done
+fi
+[ -z "$PRIVATE_IP" ] && PRIVATE_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 IP_HINT="${PRIVATE_IP:-not detected — run  hostname -I  to find it}"
 
 # Quoted heredoc: nothing in this block is expanded by the shell, so prose can
