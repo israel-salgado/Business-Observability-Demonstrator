@@ -166,32 +166,59 @@ except Exception:
     done
 
     if [ -n "$EC_MATCH_IDS" ]; then
-      # Deleting needs its own scope. Requested separately because Dynatrace SSO
-      # grants all-or-nothing: bundling it with read would fail the whole token
-      # request for a client that only has read.
-      EC_DEL_TOKEN="$(get_token 'app-engine:edge-connects:delete')"
+      # Deleting an EdgeConnect also deletes the OAuth client Dynatrace minted
+      # for it, so BOTH scopes are required. With only edge-connects:delete the
+      # request returns
+      #   403 {"missingScopes":["oauth2:clients:manage"],
+      #        "message":"Missing permission to delete OAuth client"}
+      # which reads as though the delete scope itself was refused. Creation has
+      # the same requirement, for the same reason.
+      #
+      # Requested as its own token rather than folded into the read call above:
+      # Dynatrace SSO grants all-or-nothing, so a client with read but not
+      # delete would fail the combined request and lose the ability to list.
+      EC_DEL_TOKEN="$(get_token 'app-engine:edge-connects:delete oauth2:clients:manage')"
       if [ -n "$EC_DEL_TOKEN" ]; then
         for id in $EC_MATCH_IDS; do
           CODE="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
             -H "Authorization: Bearer $EC_DEL_TOKEN" "$EC_API/$id" 2>/dev/null)"
           case "$CODE" in
             2*) ok "Deleted EdgeConnect '$EC_NAME' ($id)" ;;
-            *)  warn "Could not delete EdgeConnect $id (HTTP $CODE) — remove it in Settings" ;;
+            *)
+              warn "Could not delete EdgeConnect '$EC_NAME' (HTTP $CODE)"
+              echo ""
+              echo -e "    ${BOLD}Remove it by hand in Dynatrace:${NC}"
+              echo -e "      Settings ${BOLD}>${NC} General ${BOLD}>${NC} External Requests ${BOLD}>${NC} EdgeConnect tab"
+              echo -e "      delete the entry named ${BOLD}${EC_NAME}${NC}"
+              echo -e "      ${DIM}id: ${id}${NC}"
+              echo ""
+              echo -e "    ${DIM}Leave it and the next install will fail: the name is taken, and${NC}"
+              echo -e "    ${DIM}its client secret cannot be read back, so setup cannot adopt it.${NC}"
+              echo ""
+              ;;
           esac
         done
       else
-        warn "Found EdgeConnect '$EC_NAME' but the OAuth client lacks"
-        warn "app-engine:edge-connects:delete, so it cannot be removed from here."
-        warn "Delete it manually or the next install will collide with it:"
-        echo -e "    ${BOLD}Settings → General → External requests → EdgeConnect tab${NC}"
-        for id in $EC_MATCH_IDS; do echo "      id: $id"; done
+        warn "Found EdgeConnect '$EC_NAME' but this OAuth client cannot delete it."
+        warn "Deleting one needs BOTH app-engine:edge-connects:delete and"
+        warn "oauth2:clients:manage, because its OAuth client goes with it."
+        echo ""
+        echo -e "    ${BOLD}Remove it by hand in Dynatrace:${NC}"
+        echo -e "      Settings ${BOLD}>${NC} General ${BOLD}>${NC} External Requests ${BOLD}>${NC} EdgeConnect tab"
+        echo -e "      delete the entry named ${BOLD}${EC_NAME}${NC}"
+        for id in $EC_MATCH_IDS; do echo -e "      ${DIM}id: ${id}${NC}"; done
+        echo ""
+        echo -e "    ${DIM}Leave it and the next install will fail: the name is taken, and${NC}"
+        echo -e "    ${DIM}its client secret cannot be read back, so setup cannot adopt it.${NC}"
+        echo ""
       fi
     else
       ok "No EdgeConnect named '$EC_NAME' in the tenant"
     fi
   else
-    warn "No EdgeConnect read permission — remove '$EC_NAME' manually from"
-    warn "Settings → General → External requests → EdgeConnect tab"
+    warn "No EdgeConnect read permission — cannot check the tenant."
+    echo -e "    Remove it by hand if it exists: Settings ${BOLD}>${NC} General ${BOLD}>${NC} External Requests"
+    echo -e "    ${BOLD}>${NC} EdgeConnect tab, entry named ${BOLD}${EC_NAME}${NC}"
   fi
 fi
 
