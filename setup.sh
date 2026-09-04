@@ -1067,7 +1067,7 @@ else
 fi
 
 # ── Step 5: Deploy app ─────────────────────────────────────
-step "Deploying Demonstrator UI to Dynatrace"
+step "Deploying Demonstrator UI to Dynatrace (this step will take a moment)"
 
 cd "$SCRIPT_DIR"
 export DT_APP_OAUTH_CLIENT_ID="$DEPLOY_OAUTH_CLIENT_ID"
