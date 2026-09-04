@@ -15,11 +15,101 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONF_FILE="$SCRIPT_DIR/setup.conf"
 
 # ── Colors ──────────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
-step() { echo -e "\n${BLUE}━━━ $1 ━━━${NC}"; }
-ok()   { echo -e "  ${GREEN}✓ $1${NC}"; }
-warn() { echo -e "  ${YELLOW}⚠ $1${NC}"; }
-fail() { echo -e "  ${RED}✗ $1${NC}"; exit 1; }
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; DIM='\033[2m'; BOLD='\033[1m'; NC='\033[0m'
+
+# ── Progress display ────────────────────────────────────────
+# Long operations (npm install, Docker pull, app deploy) can run for minutes
+# with nothing on screen, which is indistinguishable from a hang. Each is run
+# behind a spinner on a single line that rewrites itself, so the screen shows
+# what is happening now without scrolling away everything that came before.
+#
+# Only when stdout is a terminal. Piped or in CI, \r and cursor codes turn into
+# unreadable noise, so those get plain one-line-per-event output instead.
+if [ -t 1 ]; then IS_TTY=true; else IS_TTY=false; fi
+
+TOTAL_STEPS=6
+CURRENT_STEP=0
+SPIN_CHARS=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+
+# Full command output goes here so the spinner stays clean; shown only on error.
+TASK_LOG="$(mktemp -t bizobs-setup.XXXXXX)"
+trap 'rm -f "$TASK_LOG"' EXIT
+
+_bar() {
+  local cur="$1" total="$2" width=22 i filled bar=''
+  filled=$(( cur * width / total ))
+  for ((i = 0; i < width; i++)); do
+    if [ "$i" -lt "$filled" ]; then bar+='█'; else bar+='░'; fi
+  done
+  printf '%s' "$bar"
+}
+
+step() {
+  CURRENT_STEP=$(( CURRENT_STEP + 1 ))
+  echo ""
+  if [ "$IS_TTY" = true ]; then
+    echo -e "${BLUE}$(_bar "$CURRENT_STEP" "$TOTAL_STEPS")${NC} ${BOLD}${CURRENT_STEP}/${TOTAL_STEPS}${NC}  ${BOLD}$1${NC}"
+  else
+    echo -e "━━━ [${CURRENT_STEP}/${TOTAL_STEPS}] $1 ━━━"
+  fi
+}
+
+ok()   { [ "$IS_TTY" = true ] && printf '\r\033[K'; echo -e "  ${GREEN}✓ $1${NC}"; }
+warn() { [ "$IS_TTY" = true ] && printf '\r\033[K'; echo -e "  ${YELLOW}⚠ $1${NC}"; }
+fail() { [ "$IS_TTY" = true ] && printf '\r\033[K'; echo -e "  ${RED}✗ $1${NC}"; exit 1; }
+
+# run_task "Label" command args...
+#   Runs the command with its output captured, showing a spinner while it works.
+#   On success the spinner line is replaced by a ✓ and how long it took. On
+#   failure the captured output is printed, because that is the one time you
+#   actually want it.
+run_task() {
+  local label="$1"; shift
+  local start_ts rc pid i=0 elapsed
+
+  start_ts=$(date +%s)
+  : > "$TASK_LOG"
+
+  if [ "$IS_TTY" != true ]; then
+    echo "  → ${label}..."
+    "$@" >"$TASK_LOG" 2>&1
+    rc=$?
+    [ "$rc" -ne 0 ] && tail -20 "$TASK_LOG"
+    return "$rc"
+  fi
+
+  "$@" >"$TASK_LOG" 2>&1 &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    elapsed=$(( $(date +%s) - start_ts ))
+    printf "\r\033[K  ${CYAN}%s${NC} %s ${DIM}(%ds)${NC}" \
+      "${SPIN_CHARS[i % 10]}" "$label" "$elapsed"
+    i=$(( i + 1 ))
+    sleep 0.12
+  done
+  wait "$pid"; rc=$?
+  elapsed=$(( $(date +%s) - start_ts ))
+
+  printf '\r\033[K'
+  if [ "$rc" -eq 0 ]; then
+    echo -e "  ${GREEN}✓${NC} ${label} ${DIM}(${elapsed}s)${NC}"
+  else
+    echo -e "  ${RED}✗${NC} ${label} ${DIM}(${elapsed}s)${NC}"
+    echo -e "  ${DIM}── last 20 lines ──${NC}"
+    tail -20 "$TASK_LOG" | sed 's/^/    /'
+  fi
+  return "$rc"
+}
+
+# Sub-status on the current line, for phases inside a step that are too quick or
+# too interactive to hand to run_task.
+say() {
+  if [ "$IS_TTY" = true ]; then
+    printf "\r\033[K  ${DIM}%s${NC}" "$1"
+  else
+    echo "  $1"
+  fi
+}
 
 echo -e "${BLUE}"
 cat << 'BANNER'
@@ -403,7 +493,120 @@ else
 fi
 
 # ── Step 1: Prerequisites ──────────────────────────────────
-step "Step 1/6: Checking prerequisites"
+step "Checking prerequisites"
+
+# ── Preflight ───────────────────────────────────────────────
+# Show what is present and what is missing BEFORE changing anything, then ask
+# once. Previously the script simply started installing — including an
+# `apt-get remove -y nodejs npm` that silently replaced whatever Node the host
+# already had. That deserves a prompt.
+NEED_INSTALL=()
+
+_have() { command -v "$1" >/dev/null 2>&1; }
+
+_node_major() { node --version 2>/dev/null | sed 's/^v//' | cut -d. -f1; }
+
+preflight_row() {
+  local name="$1" state="$2" detail="$3"
+  case "$state" in
+    ok)      printf "  ${GREEN}✓${NC} %-16s %s\n" "$name" "$detail" ;;
+    missing) printf "  ${RED}✗${NC} %-16s ${YELLOW}%s${NC}\n" "$name" "$detail" ;;
+    opt)     printf "  ${DIM}○ %-16s %s${NC}\n" "$name" "$detail" ;;
+  esac
+}
+
+echo ""
+echo -e "  ${BOLD}Component        Status${NC}"
+echo -e "  ${DIM}─────────────────────────────────────────${NC}"
+
+# Required, and installed by start.sh before we ever get here.
+for t in git curl; do
+  if _have "$t"; then
+    preflight_row "$t" ok "$($t --version 2>/dev/null | head -1 | awk '{print $NF}')"
+  else
+    preflight_row "$t" missing "missing"
+    NEED_INSTALL+=("$t")
+  fi
+done
+
+# python3 parses the JSON coming back from the EdgeConnect API. Ubuntu, Debian
+# and Amazon Linux 2023 all ship it, so this was assumed rather than checked —
+# on a minimal image its absence surfaced as a bash error mid-provisioning.
+if _have python3; then
+  preflight_row "python3" ok "$(python3 --version 2>&1 | awk '{print $2}')"
+else
+  preflight_row "python3" missing "missing — needed to read API responses"
+  NEED_INSTALL+=("python3")
+fi
+
+if _have node && [ "$(_node_major)" -ge 22 ] 2>/dev/null; then
+  preflight_row "Node.js" ok "$(node --version)"
+elif _have node; then
+  preflight_row "Node.js" missing "$(node --version) — will be replaced with v22"
+  NEED_INSTALL+=("nodejs22")
+else
+  preflight_row "Node.js" missing "missing — v22 will be installed"
+  NEED_INSTALL+=("nodejs22")
+fi
+
+if _have docker; then
+  preflight_row "Docker" ok "$(docker --version 2>/dev/null | awk '{print $3}' | tr -d ',')"
+else
+  preflight_row "Docker" missing "missing — needed for the EdgeConnect tunnel"
+  NEED_INSTALL+=("docker")
+fi
+
+if _have systemctl; then
+  preflight_row "systemd" ok "present — server will survive reboot"
+else
+  preflight_row "systemd" opt "absent — server runs under nohup, no reboot persistence"
+fi
+
+if _have ollama; then
+  preflight_row "Ollama" ok "present — local AI agents enabled"
+else
+  preflight_row "Ollama" opt "absent — optional, agents use rule-based fallbacks"
+fi
+
+echo ""
+
+if [ ${#NEED_INSTALL[@]} -gt 0 ]; then
+  echo -e "  ${BOLD}These are required and will be installed:${NC}"
+  for pkg in "${NEED_INSTALL[@]}"; do
+    case "$pkg" in
+      nodejs22) echo -e "    • Node.js 22 ${DIM}(from NodeSource; removes any existing nodejs/npm first)${NC}" ;;
+      docker)   echo -e "    • Docker ${DIM}(and enabled at boot)${NC}" ;;
+      *)        echo -e "    • $pkg" ;;
+    esac
+  done
+  echo ""
+  echo -ne "  ${CYAN}Install these and continue? [Y/n]${NC} "
+  read -r reply < "$(_tty)"
+  case "$reply" in
+    [Nn]*)
+      echo ""
+      fail "Stopped. Nothing has been changed on this machine."
+      ;;
+  esac
+  echo ""
+else
+  ok "Everything needed is already present"
+fi
+
+# Ask for sudo once, up front, and keep the credential warm.
+#
+# Nearly every install step needs sudo. Without this the first prompt lands
+# somewhere in the middle of the run, and worse, the sudo timestamp can expire
+# during a long npm install — which silently downgrades the server from a
+# systemd service to nohup, with no reboot persistence and no warning.
+if [ ${#NEED_INSTALL[@]} -gt 0 ] || ! sudo -n true 2>/dev/null; then
+  echo -e "  ${DIM}Some steps need sudo. You may be asked for your password once.${NC}"
+  sudo -v 2>/dev/null || warn "No sudo — some steps may fail or be skipped"
+  # Refresh in the background so a long npm install cannot let it lapse.
+  ( while true; do sleep 60; sudo -n true 2>/dev/null || exit; done ) &
+  SUDO_KEEPALIVE_PID=$!
+  trap 'rm -f "$TASK_LOG"; kill "${SUDO_KEEPALIVE_PID:-}" 2>/dev/null' EXIT
+fi
 
 install_node22() {
   echo "  Installing Node.js v22..."
@@ -550,28 +753,36 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 
 # ── Step 2: npm install ────────────────────────────────────
-step "Step 2/6: Installing packages"
+step "Installing packages"
 
+cd "$SCRIPT_DIR"
+
+# --legacy-peer-deps is not optional: the root pins react-is@^19 while
+# @dynatrace/strato-components peer-depends on ^18, and a plain `npm install`
+# dies with ERESOLVE.
 if [ ! -d "$SCRIPT_DIR/node_modules" ]; then
-  cd "$SCRIPT_DIR"
-  # Use --legacy-peer-deps to avoid eresolve failures with Strato/React peer deps
-  if ! npm install --legacy-peer-deps 2>&1 | tail -5; then
-    warn "npm install failed — retrying with clean slate..."
+  if ! run_task "Installing npm packages (a few minutes)" \
+        npm install --legacy-peer-deps; then
+    warn "Retrying with a clean node_modules..."
     rm -rf node_modules package-lock.json
-    npm install --legacy-peer-deps 2>&1 | tail -5 || fail "npm install failed. Check npm logs above."
+    run_task "Reinstalling npm packages" npm install --legacy-peer-deps \
+      || fail "npm install failed. See the output above."
   fi
+else
+  ok "npm packages already installed"
 fi
-# Verify dt-app is available (needed for deploy step)
-if ! npx dt-app --version &>/dev/null; then
-  warn "dt-app not found — running npm install again..."
-  cd "$SCRIPT_DIR"
+
+# dt-app is what deploys the app in step 5; a partial install leaves it absent.
+if ! npx dt-app --version >/dev/null 2>&1; then
+  warn "dt-app missing from node_modules — reinstalling"
   rm -rf node_modules package-lock.json
-  npm install --legacy-peer-deps 2>&1 | tail -5 || fail "npm install failed. Check npm logs above."
+  run_task "Reinstalling npm packages" npm install --legacy-peer-deps \
+    || fail "npm install failed. See the output above."
 fi
 ok "npm packages ready"
 
 # ── Step 3: Credentials file ──────────────────────────────
-step "Step 3/6: Configuring credentials"
+step "Configuring credentials"
 
 cat > "$SCRIPT_DIR/.dt-credentials.json" << EOF
 {
@@ -583,7 +794,7 @@ EOF
 ok "Created .dt-credentials.json"
 
 # ── Step 4: EdgeConnect ────────────────────────────────────
-step "Step 4/6: Creating and starting EdgeConnect"
+step "Creating and starting EdgeConnect"
 
 # The EdgeConnect configuration is created via API rather than by hand in the
 # Dynatrace UI. This removes the single worst failure mode in the old flow: the
@@ -795,8 +1006,9 @@ if sudo docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
   sudo docker rm "$CONTAINER_NAME" 2>/dev/null || true
 fi
 
-echo "  Pulling EdgeConnect image..."
-sudo docker pull dynatrace/edgeconnect:latest 2>&1 | tail -1
+run_task "Pulling EdgeConnect image" \
+  sudo docker pull dynatrace/edgeconnect:latest \
+  || fail "Could not pull dynatrace/edgeconnect. Check outbound access to Docker Hub."
 
 sudo docker run -d --restart always \
   --name "$CONTAINER_NAME" \
@@ -812,7 +1024,7 @@ else
 fi
 
 # ── Step 5: Deploy app ─────────────────────────────────────
-step "Step 5/6: Deploying Demonstrator UI to Dynatrace"
+step "Deploying Demonstrator UI to Dynatrace"
 
 cd "$SCRIPT_DIR"
 export DT_APP_OAUTH_CLIENT_ID="$DEPLOY_OAUTH_CLIENT_ID"
@@ -832,10 +1044,25 @@ sed "s|__ENVIRONMENT_URL__|${APPS_URL}/|" \
   "$SCRIPT_DIR/app.config.template.json" > "$SCRIPT_DIR/app.config.json"
 ok "app.config.json generated → $APPS_URL"
 
-echo "  Building and deploying (this takes ~30 seconds)..."
-DEPLOY_OUTPUT=$(npx dt-app deploy --non-interactive 2>&1)
-DEPLOY_EXIT=$?
-echo "$DEPLOY_OUTPUT" | tail -5
+# Not run_task: the output is inspected below to tell a permissions failure
+# apart from a build failure, so it has to be captured here.
+if [ "$IS_TTY" = true ]; then
+  ( npx dt-app deploy --non-interactive >"$TASK_LOG" 2>&1 ) &
+  _deploy_pid=$!
+  _i=0; _t0=$(date +%s)
+  while kill -0 "$_deploy_pid" 2>/dev/null; do
+    printf "\r\033[K  ${CYAN}%s${NC} Building and deploying the app ${DIM}(%ds)${NC}" \
+      "${SPIN_CHARS[_i % 10]}" "$(( $(date +%s) - _t0 ))"
+    _i=$(( _i + 1 )); sleep 0.12
+  done
+  wait "$_deploy_pid"; DEPLOY_EXIT=$?
+  printf '\r\033[K'
+  DEPLOY_OUTPUT="$(cat "$TASK_LOG")"
+else
+  echo "  → Building and deploying the app..."
+  DEPLOY_OUTPUT=$(npx dt-app deploy --non-interactive 2>&1)
+  DEPLOY_EXIT=$?
+fi
 
 if echo "$DEPLOY_OUTPUT" | grep -qi 'forbidden\|unauthorized\|403\|401'; then
   echo ""
@@ -854,7 +1081,7 @@ else
 fi
 
 # ── Step 6: Build & start server ───────────────────────────
-step "Step 6/6: Starting server"
+step "Starting server"
 
 echo "  Compiling TypeScript agents..."
 npm run build:agents 2>&1 | tail -1

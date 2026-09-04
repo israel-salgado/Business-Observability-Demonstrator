@@ -411,7 +411,61 @@ EdgeConnect, and it reads them straight out of the API response.
 > ```
 > That clears `setup.conf`, `.env`, and the generated `edgeConnect.yaml`.
 
-## 2.3 ⬜ Watch for these lines
+## 2.3 ⬜ What you'll see
+
+Setup shows a progress bar and a single status line that rewrites itself, so a long step looks
+like work rather than a hang:
+
+```
+███████░░░░░░░░░░░░░░░ 2/6  Installing packages
+  ⠹ Installing npm packages (a few minutes) (47s)
+```
+
+When a step finishes the spinner is replaced by a result and how long it took:
+
+```
+  ✓ Installing npm packages (a few minutes) (94s)
+```
+
+Command output is hidden unless something fails, in which case the last 20 lines are printed —
+that being the one moment you actually want them.
+
+Piping the output (CI, `tee`, a log file) switches to plain one-line-per-event text with no
+cursor codes.
+
+### Before anything is installed
+
+Setup takes an inventory first and asks once:
+
+```
+  Component        Status
+  ─────────────────────────────────────────
+  ✓ git            2.43.0
+  ✓ curl           8.5.0
+  ✓ python3        3.12.3
+  ✗ Node.js        missing — v22 will be installed
+  ✗ Docker         missing — needed for the EdgeConnect tunnel
+  ○ systemd        present — server will survive reboot
+  ○ Ollama         absent — optional, agents use rule-based fallbacks
+
+  These are required and will be installed:
+    • Node.js 22 (from NodeSource; removes any existing nodejs/npm first)
+    • Docker (and enabled at boot)
+
+  Install these and continue? [Y/n]
+```
+
+Answer `n` and nothing on the machine is touched. This matters because installing Node 22 runs
+`remove -y nodejs npm` first, which silently replaced whatever Node was already there.
+
+`python3` is checked because the EdgeConnect provisioning parses API responses with it. Ubuntu,
+Debian and Amazon Linux 2023 all ship it; a minimal image may not.
+
+Sudo is requested once, up front, and kept warm in the background for the rest of the run.
+Without that, the credential can lapse during a long `npm install`, and the server silently
+falls back from a systemd service to `nohup` — which does not survive a reboot.
+
+## 2.3b ⬜ Watch for these lines
 
 Setup runs six unattended steps: Node 22 and Docker, `npm install`, credentials and `.env`,
 the EdgeConnect container, the app deploy, then the server start. Expect a few minutes.
@@ -431,6 +485,25 @@ curl http://localhost:8080/api/health
 ```
 
 An empty `childServices` array is correct. Nothing spawns until you launch a journey.
+
+## Unattended install (no prompts at all)
+
+For rolling this out to several partners, or scripting it, pre-fill `setup.conf` and every
+prompt disappears — including the preflight confirmation, which only asks when it is attached
+to a terminal.
+
+```bash
+git clone -b wip/test-updates \
+  https://github.com/israel-salgado/Business-Observability-Demonstrator.git
+cd Business-Observability-Demonstrator
+cp setup.conf.example setup.conf
+$EDITOR setup.conf          # fill in the four values
+grep -c XXXX setup.conf     # must print 0
+./setup.sh
+```
+
+Passwordless sudo is worth configuring on the target host too, otherwise the run still stops
+for a password.
 
 ## Prefer a config file over prompts?
 
