@@ -45,8 +45,15 @@ export const AI_PROVIDER_DEFAULTS: AiProviderSettings = {
   routeViaVm: false,
 };
 
+// apiHost is intentionally blank rather than 'localhost'.
+//
+// This app runs inside Dynatrace, so 'localhost' resolves to Dynatrace's own
+// infrastructure, not the machine running the engine. It also matches no
+// EdgeConnect host pattern, so the request is never tunnelled — it could not
+// work under any configuration, while looking like a plausible default.
+// loadAppSettings() fills this in from the EdgeConnect host pattern.
 const DEFAULTS: AppSettings = {
-  apiHost: 'localhost',
+  apiHost: '',
   apiPort: '8080',
   apiProtocol: 'http',
   enableAutoGeneration: false,
@@ -101,7 +108,39 @@ export async function loadAppSettings(): Promise<{ settings: AppSettings; source
     console.warn('[AppSettings] Document load failed:', err.message);
   }
 
+  // No saved settings. Rather than falling back to 'localhost' — which can
+  // never work, since the app runs inside Dynatrace and localhost there is
+  // Dynatrace's own infrastructure — ask the tenant where the engine is.
+  // setup.sh already wrote this machine's address into the EdgeConnect host
+  // pattern, so the answer is available without the user retyping it.
+  const suggestedHost = await suggestApiHost();
+  if (suggestedHost) {
+    console.log('[AppSettings] No saved settings; using EdgeConnect host pattern:', suggestedHost);
+    return { settings: { ...DEFAULTS, apiHost: suggestedHost }, source: 'defaults' };
+  }
+
   return { settings: DEFAULTS, source: 'defaults' };
+}
+
+/**
+ * Ask the tenant for the engine's address, taken from the EdgeConnect host
+ * pattern that setup.sh configured. Returns null if it cannot be determined,
+ * in which case the caller keeps whatever default it had.
+ */
+export async function suggestApiHost(): Promise<string | null> {
+  try {
+    const res = await functions.call('proxy-api', {
+      data: { action: 'suggest-api-host' },
+    });
+    const result = await res.json() as any;
+    if (result?.success && result.host) {
+      return String(result.host);
+    }
+    console.warn('[AppSettings] Host suggestion unavailable:', result?.error);
+  } catch (err: any) {
+    console.warn('[AppSettings] Host suggestion failed:', err?.message);
+  }
+  return null;
 }
 
 /**

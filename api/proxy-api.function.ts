@@ -15,7 +15,7 @@ import {
 } from './dashboard-generator';
 
 interface ProxyPayload {
-  action: 'simulate-journey' | 'simulate-vcarb-race' | 'vcarb-race-status' | 'stop-vcarb-race' | 'get-saved-config' | 'test-connection' | 'get-services' | 'stop-all-services' | 'stop-company-services' | 'get-dormant-services' | 'clear-dormant-services' | 'clear-company-dormant' | 'chaos-get-active' | 'chaos-get-recipes' | 'chaos-inject' | 'chaos-revert' | 'chaos-revert-all' | 'chaos-get-targeted' | 'chaos-remove-target' | 'chaos-smart' | 'ec-create' | 'ec-update-patterns' | 'detect-builtin-settings' | 'deploy-builtin-settings' | 'deploy-workflow' | 'debug-builtin-schema' | 'generate-dashboard' | 'generate-dashboard-async' | 'get-dashboard-status' | 'deploy-dashboard' | 'mcp-generate-deploy-dashboard' | 'generate-deploy-dashboard' | 'preflight-dtctl' | 'list-saved-dashboards' | 'load-saved-dashboard' | 'delete-saved-dashboard' | 'deploy-business-flow' | 'list-business-flows' | 'delete-business-flows' | 'generate-pdf' | 'generate-doc' | 'load-app-settings' | 'save-app-settings' | 'check-journey-assets' | 'create-notebook' | 'execute-dql' | 'demonstrator-ai-tiles' | 'demonstrator-tiles-status' | 'field-repo-get' | 'librarian-history' | 'librarian-stats' | 'librarian-analyze' | 'system-health' | 'system-cleanup' | 'dynatrace-assist-generate' | 'github-copilot-generate' | 'github-copilot-check-credential' | 'github-copilot-save-credential' | 'github-copilot-list-models' | 'ai-provider-status' | 'ai-provider-save-key' | 'github-journey-commit' | 'github-create-issue' | 'ui-audit' | 'repair-dashboard-sharing' | 'list-generated-dashboards' | 'delete-generated-dashboard' | 'transfer-dashboard-ownership';
+  action: 'simulate-journey' | 'simulate-vcarb-race' | 'vcarb-race-status' | 'stop-vcarb-race' | 'get-saved-config' | 'test-connection' | 'get-services' | 'stop-all-services' | 'stop-company-services' | 'get-dormant-services' | 'clear-dormant-services' | 'clear-company-dormant' | 'chaos-get-active' | 'chaos-get-recipes' | 'chaos-inject' | 'chaos-revert' | 'chaos-revert-all' | 'chaos-get-targeted' | 'chaos-remove-target' | 'chaos-smart' | 'ec-create' | 'ec-update-patterns' | 'suggest-api-host' | 'detect-builtin-settings' | 'deploy-builtin-settings' | 'deploy-workflow' | 'debug-builtin-schema' | 'generate-dashboard' | 'generate-dashboard-async' | 'get-dashboard-status' | 'deploy-dashboard' | 'mcp-generate-deploy-dashboard' | 'generate-deploy-dashboard' | 'preflight-dtctl' | 'list-saved-dashboards' | 'load-saved-dashboard' | 'delete-saved-dashboard' | 'deploy-business-flow' | 'list-business-flows' | 'delete-business-flows' | 'generate-pdf' | 'generate-doc' | 'load-app-settings' | 'save-app-settings' | 'check-journey-assets' | 'create-notebook' | 'execute-dql' | 'demonstrator-ai-tiles' | 'demonstrator-tiles-status' | 'field-repo-get' | 'librarian-history' | 'librarian-stats' | 'librarian-analyze' | 'system-health' | 'system-cleanup' | 'dynatrace-assist-generate' | 'github-copilot-generate' | 'github-copilot-check-credential' | 'github-copilot-save-credential' | 'github-copilot-list-models' | 'ai-provider-status' | 'ai-provider-save-key' | 'github-journey-commit' | 'github-create-issue' | 'ui-audit' | 'repair-dashboard-sharing' | 'list-generated-dashboards' | 'delete-generated-dashboard' | 'transfer-dashboard-ownership';
   apiHost: string;
   apiPort: string;
   apiProtocol: string;
@@ -1113,6 +1113,74 @@ export default async function (payload: ProxyPayload) {
           error: `SDK EdgeConnect create failed: ${detail}${scopeInfo}`,
           debug: { rawError: JSON.stringify(errBody, null, 2) },
         };
+      }
+    }
+
+    // ── Suggest the engine host from the EdgeConnect configuration ──
+    //
+    // setup.sh already detected this machine's address and wrote it into the
+    // EdgeConnect host pattern, so the tenant already knows where the engine
+    // lives. Making the user read it off the VM and retype it into Settings is
+    // both avoidable and easy to get wrong — and the previous default,
+    // 'localhost', could never work: the app runs inside Dynatrace, so
+    // localhost is Dynatrace's own infrastructure, and a request to it matches
+    // no host pattern and is never tunnelled.
+    //
+    // Prefers an EdgeConnect with a live instance, since that is the one
+    // actually carrying traffic.
+    if (action === 'suggest-api-host') {
+      try {
+        // listEdgeConnects returns ids ONLY — name, hostPatterns and metadata
+        // all come back undefined, and `addFields: 'metadata'` does not change
+        // that (verified against a live tenant). Each entry has to be fetched
+        // with getEdgeConnect to see anything useful. Reading hostPatterns off
+        // the list result silently yields nothing.
+        const listResult = await edgeConnectClient.listEdgeConnects({});
+        const ids = (listResult.edgeConnects || [])
+          .map((ec: any) => ec.id)
+          .filter(Boolean);
+
+        const details = await Promise.all(
+          ids.map(async (id: string) => {
+            try {
+              return await edgeConnectClient.getEdgeConnect({ edgeConnectId: id });
+            } catch {
+              return null;
+            }
+          }),
+        );
+
+        const isIpv4 = (s: string) => /^\d{1,3}(\.\d{1,3}){3}$/.test(s);
+
+        // An online EdgeConnect beats an offline one; a plain IP beats a
+        // wildcard pattern like *.example.com, which is not a usable host.
+        const ranked = details
+          .filter(Boolean)
+          .map((ec: any) => ({
+            ec,
+            online: (ec.metadata?.instances?.length || 0) > 0,
+            host: (ec.hostPatterns || []).find((p: string) => isIpv4(p))
+              || (ec.hostPatterns || []).find((p: string) => !p.includes('*')),
+          }))
+          .filter((c: any) => Boolean(c.host))
+          .sort((a: any, b: any) => Number(b.online) - Number(a.online));
+
+        if (!ranked.length) {
+          return {
+            success: false,
+            error: 'No EdgeConnect with a usable host pattern was found.',
+          };
+        }
+
+        return {
+          success: true,
+          host: ranked[0].host,
+          edgeConnectName: ranked[0].ec.name,
+          online: ranked[0].online,
+        };
+      } catch (ecErr: any) {
+        const detail = ecErr?.body?.error?.message || ecErr?.message || 'Unknown error';
+        return { success: false, error: `Could not read EdgeConnect config: ${detail}` };
       }
     }
 
