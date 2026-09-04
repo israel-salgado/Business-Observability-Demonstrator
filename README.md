@@ -54,17 +54,52 @@ and Ollama (optional, only for local-model demos). `setup.sh` detects whether Ol
 and records the result, so AI features fall back to templates cleanly when it's absent. For AI
 generation, configure any cloud provider in the app under **Settings → AI Provider**.
 
-#### Dynatrace side
+#### Dynatrace side: two credentials
 
 - **Dynatrace NFR tenant** (SaaS or Managed 1.275+, AppEngine requires a DPS licence)
-- **4 Dynatrace credentials** (see [TECHNICAL-GUIDE.md](TECHNICAL-GUIDE.md#step-2-create-dynatrace-credentials) for how to create them):
+- **A platform token and one OAuth client.** Both are created in **Account Management → Identity
+  & access management**. Full step-by-step in
+  [TECHNICAL-GUIDE.md](TECHNICAL-GUIDE.md#step-2-create-dynatrace-credentials).
 
-| Credential | Type | Where To Create |
-|-----------|------|-----------------|
-| **API Token** | `dt0c01.*` | DT tenant → Settings → Access Tokens (scopes: `events.ingest`, `metrics.ingest`, `openTelemetryTrace.ingest`, `entities.read`) |
-| **DT Platform Token (dtctl)** | `dt0s16.*` (recommended) | Used by bespoke dashboard deployment via dtctl. Minimum scope: `document:documents:write` (recommended: `document:documents:read`; optional for environment sharing: `document:environment-shares:write`) |
-| **EdgeConnect OAuth** | `dt0s10.*` or `dt0s02.*` | DT tenant → Settings → General → External Requests → Add EdgeConnect. DT generates the credentials automatically. |
-| **Deploy OAuth** *(optional)* | `dt0s10.*` or `dt0s02.*` | Same client works if you add `app-engine:apps:install` + `app-engine:apps:run` scopes. Or use a separate account-level client from Account Management → IAM → OAuth clients. |
+| # | Credential | Where | Covers |
+|---|---|---|---|
+| 1 | **Platform token** (`dt0s16.*`) | IAM → Platform tokens | Telemetry ingest, dashboards, settings, OpenPipeline config, credential vault, DQL |
+| 2 | **OAuth client** (`dt0s02.*`) | IAM → OAuth clients | The EdgeConnect tunnel and the app install |
+
+> **Why two and not one?** `app-engine:edge-connects:connect`, the permission an EdgeConnect
+> instance uses to establish its tunnel, is only available to OAuth clients, not platform
+> tokens. Everything else the demonstrator needs is available to a single platform token.
+
+> **Note for anyone following older guides:** this project originally required four credentials
+> including a classic access token (`dt0c01.*`) created in *environment* settings. Classic
+> access tokens are labelled "classic" in the Dynatrace docs and the OAuth permission picker now
+> carries a `[DEPRECATED] Environment Api` section. A Gen3 platform token with the
+> `openpipeline:*:ingest` scopes was verified working for ingest on 2026-09-03, so the classic
+> token is no longer needed. `setup.sh` still accepts one if you have it.
+
+**Platform token scopes.** Account Management → IAM → Platform tokens → Create token:
+
+| Purpose | Scopes |
+|---|---|
+| Telemetry ingest | `openpipeline:traces:ingest`, `openpipeline:metrics:ingest`, `openpipeline:logs:ingest`, `openpipeline:bizevents:ingest`, `openpipeline:events:ingest` |
+| Dashboards | `document:documents:read`, `document:documents:write`, `document:environment-shares:write` |
+| Setup checklist | `openpipeline:configurations:read`/`:write`, `settings:objects:read`/`:write`, `settings:schemas:read`, `automation:workflows:read`/`:write` |
+| EdgeConnect host patterns | `app-engine:edge-connects:read`, `app-engine:edge-connects:write` |
+| AI provider key storage | `credential-vault:entries:read`, `credential-vault:entries:write` |
+| The app's DQL queries | `storage:buckets:read` (required *in addition* to the table scopes), `storage:events:read`, `storage:bizevents:read`, `storage:metrics:read`, `storage:logs:read`, `storage:spans:read`, `storage:entities:read`, `storage:smartscape:read` |
+
+**OAuth client permissions.** Account Management → IAM → OAuth clients → Create OAuth client.
+Grant type **Client credentials**, subject **an active user** (your email):
+
+| Purpose | Permission |
+|---|---|
+| EdgeConnect tunnel | `app-engine:edge-connects:connect` |
+| Install the app | `app-engine:apps:install` |
+| Run the app | `app-engine:apps:run` |
+
+The EdgeConnect *configuration* itself is still created in your **environment** under
+Settings → General → External requests. Name it exactly `bizobs-demonstrator`, because
+`setup.sh` writes that literal string into `edgeconnect/edgeConnect.yaml`.
 
 ### One Command
 

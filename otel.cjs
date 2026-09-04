@@ -86,6 +86,8 @@ function deriveOtlpBaseUrl(rawUrl) {
 // Prefer the dedicated otelToken from .dt-credentials.json (has ingest scopes)
 // Fall back to env vars or the general apiToken
 
+const { dtAuthHeader, dtAuthScheme, isPlatformToken, isClassicToken } = require("./utils/dt-auth.cjs");
+
 let DT_API_URL = "";
 let DT_API_TOKEN = "";
 
@@ -105,7 +107,10 @@ try {
     DT_API_URL = deriveOtlpBaseUrl(creds.environmentUrl) + "/api/v2/otlp";
   }
   // Prefer the dedicated otelToken (has ingest scopes).
-  // Do not use the platform token for OTLP export; it often lacks ingest scopes.
+  // A Gen3 platform token (dt0s16.*) with openpipeline:*:ingest works here too, and is
+  // now the preferred option. It just needs the Bearer scheme instead of Api-Token,
+  // which dtAuthHeader() handles. (The previous note here claimed platform tokens
+  // "often lack ingest scopes" — that was a scopes problem, not an auth-scheme one.)
   if (!DT_API_TOKEN) {
     DT_API_TOKEN = creds.otelToken || creds.apiToken || "";
   }
@@ -122,10 +127,14 @@ if (!DT_API_URL || !DT_API_TOKEN) {
   console.warn("[otel.js] 💡 Configure credentials at startup or via the UI, then restart for OTel export");
 } else {
   console.log(`[otel.js] ✅ OTLP endpoint: ${DT_API_URL}`);
+  console.log(`[otel.js]    Auth scheme: ${dtAuthScheme(DT_API_TOKEN)}`
+    + (isPlatformToken(DT_API_TOKEN) ? " (Gen3 platform token)" : isClassicToken(DT_API_TOKEN) ? " (classic access token)" : ""));
 }
 
 const CAN_EXPORT = !!(DT_API_URL && DT_API_TOKEN);
-const AUTH_HEADER = { Authorization: "Api-Token " + DT_API_TOKEN };
+// Classic tokens use "Api-Token", platform tokens and OAuth tokens use "Bearer".
+// See utils/dt-auth.cjs for the rule and the empirical verification behind it.
+const AUTH_HEADER = { Authorization: dtAuthHeader(DT_API_TOKEN) };
 
 // ===== GENERAL SETUP =====
 

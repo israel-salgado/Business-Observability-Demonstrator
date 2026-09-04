@@ -471,7 +471,9 @@ async function deployJourneyDashboard(journeyConfig, options = {}) {
 
       const targetEnvironment = environmentUrl || DT_ENVIRONMENT;
       documentServiceUrl = normalizeSprintUrl(targetEnvironment);
-      authHeader = `Api-Token ${DT_TOKEN}`;
+      // DT_PLATFORM_TOKEN is a dt0s16 platform token, which needs Bearer, not
+      // Api-Token. Canonical rule: utils/dt-auth.cjs.
+      authHeader = `${String(DT_TOKEN).startsWith('dt0c') ? 'Api-Token' : 'Bearer'} ${DT_TOKEN}`;
 
       const response = await fetch(
         `${documentServiceUrl}/platform/classic/environment-api/v2/dashboards`,
@@ -508,10 +510,12 @@ async function deployJourneyDashboard(journeyConfig, options = {}) {
     }
     
     // Direct deployment (legacy)
-    const isOAuthToken = DT_TOKEN.length > 100;
-    authHeader = isOAuthToken ? `Bearer ${DT_TOKEN}` : `Api-Token ${DT_TOKEN}`;
-    
-    console.log(`📡 Deploying dashboard with ${isOAuthToken ? 'OAuth' : 'Platform'} token...`);
+    // Only classic access tokens (dt0c01.*) use Api-Token. Platform tokens (dt0s16.*)
+    // and OAuth access tokens use Bearer. Canonical rule: utils/dt-auth.cjs.
+    const isClassicToken = String(DT_TOKEN).startsWith('dt0c');
+    authHeader = `${isClassicToken ? 'Api-Token' : 'Bearer'} ${DT_TOKEN}`;
+
+    console.log(`📡 Deploying dashboard with ${isClassicToken ? 'classic access' : 'platform/OAuth'} token...`);
     
     documentServiceUrl = normalizeSprintUrl(DT_ENVIRONMENT);
     

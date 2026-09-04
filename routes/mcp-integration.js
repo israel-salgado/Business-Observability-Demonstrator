@@ -8,6 +8,8 @@ import { spawn } from 'child_process';
 import { AuthorizationCode } from 'simple-oauth2';
 import crypto from 'crypto';
 import open from 'open';
+// Classic tokens use "Api-Token"; platform and OAuth tokens use "Bearer". See utils/dt-auth.cjs.
+import dtAuth from '../utils/dt-auth.cjs';
 import fetch from 'node-fetch';
 
 const router = express.Router();
@@ -1416,7 +1418,7 @@ router.post('/deploy-dashboard', async (req, res) => {
     const response = await fetch(deployUrl, {
       method: 'POST',
       headers: {
-        'Authorization': `Api-Token ${session.token}`,
+        'Authorization': dtAuth.dtAuthHeader(session.token),
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       },

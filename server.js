@@ -22,6 +22,10 @@ import readline from 'readline';
 import { ensureServiceRunning, getServiceNameFromStep, getServicePort, stopAllServices, stopCustomerJourneyServices, getChildServices, getChildServiceMeta, performHealthCheck, getServiceStatus, cleanupOrphanedServiceProcesses, getDormantServices, clearDormantServices, clearDormantServicesForCompany, blockCompany, unblockCompany } from './services/service-manager.js';
 import portManager from './services/port-manager.js';
 import { startAutoLoadWatcher, stopAutoLoadWatcher, stopAllAutoLoads, getAutoLoadStatus, stopAutoLoad } from './services/auto-load.js';
+// Single source of truth for the Dynatrace Authorization header.
+// Classic tokens (dt0c01.*) use "Api-Token"; platform tokens (dt0s16.*) and OAuth
+// access tokens use "Bearer". See utils/dt-auth.cjs.
+import dtAuth from './utils/dt-auth.cjs';
 
 import journeyRouter from './routes/journey.js';
 import simulateRouter from './routes/simulate.js';
@@ -502,7 +506,7 @@ async function sendDynatraceEvent(eventType, properties, dtEnvironmentOverride =
         response = await fetch(`${ingestBaseUrl}/api/v2/events/ingest`, {
           method: 'POST',
           headers: {
-            'Authorization': `Api-Token ${DT_TOKEN}`,
+            'Authorization': dtAuth.dtAuthHeader(DT_TOKEN),
             'Content-Type': 'application/json'
           },
           body: JSON.stringify(eventPayload)
@@ -2456,7 +2460,7 @@ app.post('/api/admin/dt-credentials/test', async (req, res) => {
     const response = await fetch(`${ingestBaseUrl}/api/v2/events/ingest`, {
       method: 'POST',
       headers: {
-        'Authorization': `Api-Token ${token}`,
+        'Authorization': dtAuth.dtAuthHeader(token),
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(testPayload)
@@ -2519,7 +2523,7 @@ async function dtProxyFetch(apiPath, params = {}) {
   }
   
   const res = await fetch(url.toString(), {
-    headers: { 'Authorization': `Api-Token ${token}`, 'Accept': 'application/json' },
+    headers: { 'Authorization': dtAuth.dtAuthHeader(token), 'Accept': 'application/json' },
     signal: AbortSignal.timeout(30000)
   });
   
@@ -3507,7 +3511,7 @@ app.post('/api/dynatrace/deploy-dashboard', async (req, res) => {
     
     // Check if this is a Sprint environment with Platform token
     const isSprintEnvironment = DT_ENVIRONMENT.includes('.sprint.') || DT_ENVIRONMENT.includes('sprint.apps.dynatrace');
-    const isPlatformToken = DT_TOKEN.length < 100 && (DT_TOKEN.startsWith('dt0s') || DT_TOKEN.startsWith('dt0c'));
+    const isPlatformToken = dtAuth.isPlatformToken(DT_TOKEN) || dtAuth.isClassicToken(DT_TOKEN);
     const isOAuthToken = DT_TOKEN.length > 100 && !DT_TOKEN.startsWith('dt0');
     
     // detection results log removed
@@ -3553,7 +3557,9 @@ app.post('/api/dynatrace/deploy-dashboard', async (req, res) => {
         apiBaseUrl = apiBaseUrl.replace('.sprint.apps.dynatracelabs.com', '.sprint.dynatracelabs.com');
       }
       
-      const authHeader = isOAuthToken ? `Bearer ${DT_TOKEN}` : `Api-Token ${DT_TOKEN}`;
+      // dtAuthHeader covers all three cases: classic → Api-Token, platform token and
+      // OAuth access token → Bearer. The old ternary sent platform tokens as Api-Token.
+      const authHeader = dtAuth.dtAuthHeader(DT_TOKEN);
       
       // Try Document API first (for v21 dashboards / Grail Dashboards)
       try {
@@ -4170,7 +4176,7 @@ app.post('/api/dynatrace/verify-deployment', async (req, res) => {
     }
     
     const baseUrl = DT_ENVIRONMENT.replace(/\/$/, '');
-    const headers = { 'Authorization': `Api-Token ${DT_TOKEN}`, 'Content-Type': 'application/json' };
+    const headers = { 'Authorization': dtAuth.dtAuthHeader(DT_TOKEN), 'Content-Type': 'application/json' };
     
     console.log(`[verify] Checking deployment for ${companyName}...`);
     

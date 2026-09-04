@@ -159,7 +159,11 @@ export async function sendDynatraceEvent(
         response = await fetch(`${baseUrl}/api/v2/events/ingest`, {
           method: 'POST',
           headers: {
-            'Authorization': `Api-Token ${DT_TOKEN}`,
+            // Only classic access tokens (dt0c01.*) use the Api-Token scheme.
+            // Platform tokens (dt0s16.*) and OAuth access tokens use Bearer.
+            // Canonical rule lives in utils/dt-auth.cjs; inlined here because this
+            // file is compiled by tsc and importing the .cjs helper would need allowJs.
+            'Authorization': `${String(DT_TOKEN).startsWith('dt0c') ? 'Api-Token' : 'Bearer'} ${DT_TOKEN}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(eventPayload),

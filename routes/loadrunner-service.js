@@ -2,6 +2,8 @@ import express from 'express';
 import http from 'http';
 import https from 'https';
 import crypto from 'crypto';
+// Classic tokens use "Api-Token"; platform and OAuth tokens use "Bearer". See utils/dt-auth.cjs.
+import dtAuth from '../utils/dt-auth.cjs';
 const router = express.Router();
 
 // Feature flag config cache - refreshed periodically from the API
@@ -158,7 +160,7 @@ router.post('/start', (req, res) => {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': `Api-Token ${DT_TOKEN}`,
+              'Authorization': dtAuth.dtAuthHeader(DT_TOKEN),
               'Content-Length': Buffer.byteLength(eventPayload)
             }
           }, (dtRes) => {

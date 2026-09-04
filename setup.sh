@@ -204,8 +204,16 @@ fi
 [ -z "$DEPLOY_OAUTH_CLIENT_SECRET" ] && DEPLOY_OAUTH_CLIENT_SECRET="$EC_OAUTH_CLIENT_SECRET"
 [ -z "$ENV_TYPE" ] && ENV_TYPE="sprint"
 
-if [[ ! "$API_TOKEN" == dt0c01.* ]]; then
-  fail "API Token must start with 'dt0c01.' — you entered '${API_TOKEN:0:10}...'. Delete setup.conf and re-run ./setup.sh"
+# Ingest credential: accepts either a Gen3 platform token (dt0s16.*, preferred) or a
+# classic access token (dt0c01.*, legacy). Classic access tokens are labelled "classic" in
+# the Dynatrace docs and the OAuth picker now carries a "[DEPRECATED] Environment Api"
+# section, so new setups should use a platform token with the openpipeline:*:ingest scopes.
+if [[ "$API_TOKEN" == dt0s16.* ]]; then
+  INGEST_TOKEN_KIND="platform"
+elif [[ "$API_TOKEN" == dt0c01.* ]]; then
+  INGEST_TOKEN_KIND="classic"
+else
+  fail "Ingest token must be a platform token (dt0s16.*) or a classic access token (dt0c01.*) — you entered '${API_TOKEN:0:10}...'. Delete setup.conf and re-run ./setup.sh"
 fi
 
 if [[ ! "$DT_PLATFORM_TOKEN" == dt0s*.* ]]; then
@@ -332,6 +340,9 @@ upsert_env_var "DT_ACCOUNT_OAUTH_CLIENT_ID" "$DT_ACCOUNT_OAUTH_CLIENT_ID"
 upsert_env_var "DT_ACCOUNT_OAUTH_CLIENT_SECRET" "$DT_ACCOUNT_OAUTH_CLIENT_SECRET"
 upsert_env_var "DT_ACCOUNT_RESOURCE" "$DT_ACCOUNT_RESOURCE"
 upsert_env_var "DT_ACCOUNT_TOKEN_URL" "$DT_ACCOUNT_TOKEN_URL"
+# Tell the runtime which auth scheme the ingest token needs: platform tokens use
+# "Authorization: Bearer", classic access tokens use "Authorization: Api-Token".
+upsert_env_var "DT_INGEST_TOKEN_KIND" "${INGEST_TOKEN_KIND:-classic}"
 
 # Record the local-LLM mode explicitly so the runtime never has to guess.
 # setup.sh does not install Ollama: local models are opt-in. If Ollama is already

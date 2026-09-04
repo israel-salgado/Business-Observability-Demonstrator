@@ -12,6 +12,9 @@
 
 import express from 'express';
 import fs from 'fs/promises';
+// Classic tokens (dt0c01.*) use "Api-Token"; platform tokens (dt0s16.*) and OAuth
+// access tokens use "Bearer". See utils/dt-auth.cjs.
+import dtAuth from '../utils/dt-auth.cjs';
 import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -1038,12 +1041,17 @@ async function discoverBizEventFields(company, journeyType, { maxRetries = 8, po
       return null;
     }
 
-    // Detect token type: OAuth tokens are long and don't start with 'dt0'
-    const isOAuthToken = dtToken.length > 100 && !dtToken.startsWith('dt0');
-    const authHeader = isOAuthToken ? `Bearer ${dtToken}` : `Api-Token ${dtToken}`;
+    // Classic tokens use Api-Token; platform tokens and OAuth tokens use Bearer.
+    const authHeader = dtAuth.dtAuthHeader(dtToken);
+    const isOAuthToken = !dtAuth.isClassicToken(dtToken);
 
-    // Normalize URL: Grail endpoint needs the non-apps URL for Api-Token auth
-    const baseUrl = dtUrl.replace(/\/+$/, '').replace('.apps.dynatrace', '.dynatrace');
+    // The .apps. host rewrite exists only because classic Api-Token auth needs the
+    // non-apps host for Grail. Verified 2026-09-03: with a platform token and Bearer,
+    // POST <apps>/platform/storage/query/v1/query:execute returns 202, so leave the
+    // apps host alone in that case.
+    const baseUrl = dtAuth.isClassicToken(dtToken)
+      ? dtUrl.replace(/\/+$/, '').replace('.apps.dynatrace', '.dynatrace')
+      : dtUrl.replace(/\/+$/, '');
     const queryUrl = `${baseUrl}/platform/storage/query/v1/query:execute`;
 
     // Query a sample of recent bizevents WITHOUT | fields to discover ALL additionalfields
