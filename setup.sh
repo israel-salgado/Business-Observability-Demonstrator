@@ -40,6 +40,18 @@ if [ -f "$CONF_FILE" ]; then
   source "$CONF_FILE"
 fi
 
+# Prints a short, non-reversible hint so the user can confirm they pasted the
+# right thing without the full secret ever appearing on screen or in scrollback.
+mask_secret() {
+  local v="$1"
+  local n=${#v}
+  if [ "$n" -le 12 ]; then
+    printf '%s' "$(printf '%*s' "$n" '' | tr ' ' '*')"
+  else
+    printf '%s…%s (%d chars)' "${v:0:8}" "${v: -4}" "$n"
+  fi
+}
+
 prompt_if_missing() {
   local var_name="$1"
   local prompt_text="$2"
@@ -56,6 +68,29 @@ prompt_if_missing() {
   fi
 }
 
+# Same as prompt_if_missing but does not echo what you type. Use this for every
+# token, client secret, or anything else that shouldn't end up in terminal
+# scrollback, a screen share, or a recorded session.
+prompt_secret_if_missing() {
+  local var_name="$1"
+  local prompt_text="$2"
+  local placeholder="$3"
+  local current_val="${!var_name}"
+
+  if [ -z "$current_val" ] || [ "$current_val" = "$placeholder" ]; then
+    echo -ne "  ${CYAN}${prompt_text}${NC} "
+    read -rs input
+    echo ""   # read -s swallows the newline the user typed
+    if [ -z "$input" ]; then
+      fail "$var_name is required. Cannot continue."
+    fi
+    eval "$var_name=\"$input\""
+    echo -e "  ${GREEN}  → received $(mask_secret "$input")${NC}"
+  fi
+}
+
+# Optional, and treated as a secret: input is hidden. Empty input falls back to
+# the named variable.
 prompt_optional() {
   local var_name="$1"
   local prompt_text="$2"
@@ -64,12 +99,14 @@ prompt_optional() {
 
   if [ -z "$current_val" ]; then
     echo -ne "  ${CYAN}${prompt_text}${NC} "
-    read -r input
+    read -rs input
+    echo ""
     if [ -z "$input" ]; then
       eval "$var_name=\"${!fallback_var}\""
       echo -e "  ${GREEN}  → Using same as EdgeConnect${NC}"
     else
       eval "$var_name=\"$input\""
+      echo -e "  ${GREEN}  → received $(mask_secret "$input")${NC}"
     fi
   fi
 }
@@ -144,7 +181,7 @@ if [ "$NEED_PROMPT" = true ]; then
   echo -e "  ${YELLOW}            document:documents:read+write, settings:objects:read+write,${NC}"
   echo -e "  ${YELLOW}            storage:buckets:read + the storage:*:read set${NC}"
   echo -e "  ${YELLOW}Starts with: dt0s16.  (a legacy dt0c01. access token also still works)${NC}"
-  prompt_if_missing "API_TOKEN" "Platform Token:" "dt0s16.XXXX..."
+  prompt_secret_if_missing "API_TOKEN" "Platform Token:" "dt0s16.XXXX..."
   echo ""
 
   # 4. Same platform token is reused for dashboard deployment.
@@ -171,7 +208,7 @@ if [ "$NEED_PROMPT" = true ]; then
   echo -e "  ${CYAN}─── 5/6: EdgeConnect OAuth Client Secret ───${NC}"
   echo -e "  ${YELLOW}oauth.client_secret from the same downloaded YAML.${NC}"
   echo -e "  ${YELLOW}Shown only once — a later re-download will NOT contain it.${NC}"
-  prompt_if_missing "EC_OAUTH_CLIENT_SECRET" "EdgeConnect OAuth Client Secret:" "dt0s10.XXXX.YYYY..."
+  prompt_secret_if_missing "EC_OAUTH_CLIENT_SECRET" "EdgeConnect OAuth Client Secret:" "dt0s10.XXXX.YYYY..."
   echo ""
 
   # 7. AppEngine Deploy OAuth

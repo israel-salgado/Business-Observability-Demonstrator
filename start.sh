@@ -103,7 +103,11 @@ fi
 # ── What you'll be asked for ────────────────────────────────
 step "Next: setup.sh will ask you for 6 things"
 
+# Resolve the fallback text OUTSIDE the heredoc. Inside a ${VAR:-default}
+# expansion, a literal "<" is parsed as a redirection operator and bash fails
+# with "bad substitution", killing the script before it ever reaches setup.sh.
 PRIVATE_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+PRIVATE_IP_DISPLAY="${PRIVATE_IP:-(could not detect: run  hostname -I  to find it)}"
 
 cat << INFO
 
@@ -119,7 +123,7 @@ cat << INFO
   Creating the EdgeConnect first? In your ENVIRONMENT go to:
     Settings → General → External requests → EdgeConnect tab → + New EdgeConnect
       Name:          bizobs-demonstrator        (must match exactly)
-      Host patterns: ${PRIVATE_IP:-<this machine's private IP>}
+      Host patterns: ${PRIVATE_IP_DISPLAY}
 
   Full details: ${INSTALL_DIR}/README-START_HERE.md
 
