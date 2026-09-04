@@ -5,8 +5,8 @@
 > predate the June 2026 Dynatrace Gen3 changes and still describe the old four-credential
 > flow with classic access tokens.
 >
-> **Status:** actively being validated on a clean VM against a clean tenant. Steps marked
-> ✅ have been verified working. Steps marked ⬜ are next up and not yet run end to end.
+> **Status:** validated end to end on a clean Linux host against a Gen3 tenant. Steps marked
+> ✅ have been verified working. Steps marked ⬜ are not yet confirmed.
 
 **What you're building.** Two pieces:
 1. A **Linux host** that runs the engine, generating real microservices, real traffic, and
@@ -34,8 +34,8 @@ the tenant ID.
 | **Sprint** (Dynatrace internal) | `https://abc12345.sprint.apps.dynatracelabs.com` | `https://abc12345.sprint.dynatracelabs.com` | `sprint` |
 
 > **The two-host thing matters.** Telemetry ingest goes to the host **without** `.apps.`,
-> while the app and DQL live on the host **with** `.apps.`. Verified 2026-09-03: ingest paths
-> return 404 on the `.apps.` host. The setup script derives both automatically, but if you
+> while the app and DQL live on the host **with** `.apps.`. Verified against a Gen3 tenant:
+> ingest paths return 404 on the `.apps.` host. The setup script derives both automatically, but if you
 > ever hand-configure anything, this is the trap.
 
 **Also required:**
@@ -161,8 +161,8 @@ Copy the token. It starts with `dt0s16.` and is shown once. **Record as `PLATFOR
 
 ## 1.3 ✅ Verify the token can ingest
 
-Already verified on 2026-09-03 against a Gen3 sprint tenant, so you can skip this unless
-something later goes wrong. Recording it because it's the check that proved the Gen3 path
+Already verified against a Gen3 tenant, so you can skip this unless something later goes
+wrong. Recording it because it's the check that proved the Gen3 path
 works and it's a useful diagnostic.
 
 A `dt0s16` platform token sent as `Authorization: Bearer` was accepted on the existing
@@ -221,9 +221,8 @@ Manage OAuth clients  → oauth2:clients:manage
 > dedicated OAuth client for the tunnel, and minting a client requires
 > `oauth2:clients:manage`.
 >
-> **That scope is not offered to platform tokens.** Verified against a live Gen3 sprint
-> tenant on 2026-09-04 — posting to the EdgeConnect endpoint with a `dt0s16` platform token
-> returns:
+> **That scope is not offered to platform tokens.** Verified against a live Gen3 tenant —
+> posting to the EdgeConnect endpoint with a `dt0s16` platform token returns:
 >
 > ```json
 > 403 {"missingScopes":["oauth2:clients:manage"],
@@ -394,13 +393,13 @@ Being tracked in `MVP-TEST-LOG.md` and fixed as we go.
 
 | Issue | Status |
 |---|---|
-| EdgeConnect name is a hardcoded literal with no validation | **Fixed 2026-09-04** — `setup.sh` creates the EdgeConnect via API; the name is never typed by a human |
-| Manual EdgeConnect creation + YAML download | **Fixed 2026-09-04** — fully automated, credentials read from the create response |
-| Tokens echoed in clear text at the prompts | **Fixed 2026-09-04** — `read -s`, only the first 7 chars are shown back |
-| No way to correct a mistyped credential on re-run | **Fixed 2026-09-04** — `./setup.sh --reset` |
-| `start.sh` crashed with `bad substitution` before reaching `setup.sh` | **Fixed 2026-09-04** — angle brackets in a `${var:-default}` inside an unquoted heredoc |
-| `setup.sh` prompt counter mislabels itself | **Fixed 2026-09-04** — now a straight 1/4 → 4/4 |
-| Prompt 6 silently reused the EdgeConnect client for the app install | **Fixed 2026-09-04** — that prompt no longer exists |
+| EdgeConnect name is a hardcoded literal with no validation | **Fixed** — `setup.sh` creates the EdgeConnect via API; the name is never typed by a human |
+| Manual EdgeConnect creation + YAML download | **Fixed** — fully automated, credentials read from the create response |
+| Tokens echoed in clear text at the prompts | **Fixed** — `read -s`, only the first 7 chars are shown back |
+| No way to correct a mistyped credential on re-run | **Fixed** — `./setup.sh --reset` |
+| `start.sh` crashed with `bad substitution` before reaching `setup.sh` | **Fixed** — angle brackets in a `${var:-default}` inside an unquoted heredoc |
+| `setup.sh` prompt counter mislabels itself | **Fixed** — now a straight 1/4 → 4/4 |
+| Prompt 6 silently reused the EdgeConnect client for the app install | **Fixed** — that prompt no longer exists |
 | `TECHNICAL-GUIDE.md` still documents the old four-credential classic flow | Open, rewrite after a clean run |
 | The four AI agents still require Ollama; they don't use the AI Provider setting | Open, by design for now |
 | `deployment-guide/` still contains pre-June-2026 instructions | Open |

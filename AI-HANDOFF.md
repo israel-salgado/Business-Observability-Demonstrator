@@ -2,11 +2,11 @@
 
 > **If you are an AI coding assistant working in this repo, start here.**
 >
-> This file is **committed**, so it travels with a `git clone`. The richer local notes
-> (`PROJECT-MEMORY.md`, `MVP-TEST-LOG.md`) are gitignored and live only on the machine where
-> the earlier work happened, so don't expect them to exist here.
+> This file is **committed**, so it travels with a `git clone`. Local working notes
+> (`PROJECT-MEMORY.md`, `MVP-TEST-LOG.md`) are gitignored, so don't expect them to exist in a
+> fresh clone.
 >
-> Last updated: **2026-09-03**. Branch: **`wip/test-updates`**.
+> Working branch: **`wip/test-updates`**.
 
 ---
 
@@ -41,7 +41,7 @@ dashboards, and AI-driven chaos plus self-healing. The **engine** runs on a Linu
   (`npx tsc --noEmit -p <each>`). All shell scripts pass `bash -n`.
 - **Gen3 platform token ingest.** A `dt0s16` platform token with the `openpipeline:*:ingest`
   scopes, sent as `Authorization: Bearer`, is accepted on the **existing** endpoints. Verified
-  against a live Gen3 sprint tenant.
+  against a live Gen3 tenant.
 
 ### Never run
 **Nothing has been deployed to a tenant or executed on a host yet.** All prior work was done on
@@ -165,10 +165,10 @@ still call Ollama directly, so "AI Provider works" and "the agents work" are ind
 
 ---
 
-## First live VM run — 2026-09-04
+## Verified on a live run
 
-Everything below was executed on a real Ubuntu VM against a live Gen3 sprint tenant. This
-supersedes the "never run" note above for these specific areas.
+Everything below was executed on a real Linux host against a live Gen3 tenant, rather than
+inferred from the source. It supersedes the "never run" note above for these areas.
 
 ### The EdgeConnect open question is ANSWERED
 
@@ -188,8 +188,8 @@ does exactly this, and the credential model stays at two user-supplied credentia
 `GET` on the same endpoint works fine with a platform token (200), so reads were never the
 problem.
 
-### Fixed in this pass
-- `start.sh` crashed on line 122 with `bad substitution` before ever calling `setup.sh` —
+### Fixed
+- `start.sh` crashed with `bad substitution` before ever calling `setup.sh` —
   `${PRIVATE_IP:-<this machine's private IP>}` in an unquoted heredoc; bash read `<` as a
   redirection. Now a quoted heredoc with values printed separately.
 - EdgeConnect is created via API. The hardcoded-name booby trap is gone.
