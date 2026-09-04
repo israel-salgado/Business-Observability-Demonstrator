@@ -101,33 +101,40 @@ else
 fi
 
 # ── What you'll be asked for ────────────────────────────────
-step "Next: setup.sh will ask you for 6 things"
+step "Next: setup.sh will ask you for 4 things"
 
 # Resolve the fallback text OUTSIDE the heredoc. Inside a ${VAR:-default}
 # expansion, a literal "<" is parsed as a redirection operator and bash fails
 # with "bad substitution", killing the script before it ever reaches setup.sh.
 PRIVATE_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-PRIVATE_IP_DISPLAY="${PRIVATE_IP:-(could not detect: run  hostname -I  to find it)}"
+IP_HINT="${PRIVATE_IP:-not detected — run  hostname -I  to find it}"
 
-cat << INFO
+# Quoted heredoc: nothing in this block is expanded by the shell, so prose can
+# contain any punctuation safely. Values are substituted with printf below.
+# (An earlier version interpolated directly here and crashed with
+# "bad substitution" because a default value contained angle brackets, which
+# bash read as a redirection.)
+cat << 'INFO'
 
-  Have these ready. All of them come from Dynatrace.
+  Have these ready. Both come from Account Management (myaccount.dynatrace.com).
 
     1. Environment type    sprint or prod
     2. Tenant ID           the abc12345 part of your Dynatrace URL
-    3. Platform token      dt0s16...  (Account Management → IAM → Platform tokens)
-    4. EdgeConnect client ID     \\
-    5. EdgeConnect client secret / from the edgeConnect.yaml you downloaded
-    6. App install OAuth client  (Account Management → IAM → OAuth clients)
+    3. Platform token      dt0s16...   IAM -> Platform tokens
+    4. OAuth client        dt0s02...   IAM -> OAuth clients
+                           needs 4 permissions:
+                             app-engine:apps:install
+                             app-engine:apps:run
+                             app-engine:edge-connects:connect
+                             oauth2:clients:manage
 
-  Creating the EdgeConnect first? In your ENVIRONMENT go to:
-    Settings → General → External requests → EdgeConnect tab → + New EdgeConnect
-      Name:          bizobs-demonstrator        (must match exactly)
-      Host patterns: ${PRIVATE_IP_DISPLAY}
-
-  Full details: ${INSTALL_DIR}/README-START_HERE.md
+  You do NOT need to create an EdgeConnect by hand. Setup creates it for you,
+  names it, sets the host pattern, and collects the generated credentials.
 
 INFO
+
+printf '  Private IP of this machine: %s\n' "$IP_HINT"
+printf '  Full details: %s/README-START_HERE.md\n\n' "$INSTALL_DIR"
 
 # Give the user a chance to bail out and go create credentials first.
 # Read from /dev/tty so this works even when piped from curl.

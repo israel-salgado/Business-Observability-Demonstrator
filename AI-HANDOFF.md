@@ -163,6 +163,54 @@ still call Ollama directly, so "AI Provider works" and "the agents work" are ind
 5. **Then** Settings → AI Provider, save a key, and generate a journey. First live exercise of
    the provider-agnostic work.
 
+---
+
+## First live VM run — 2026-09-04
+
+Everything below was executed on a real Ubuntu VM against a live Gen3 sprint tenant. This
+supersedes the "never run" note above for these specific areas.
+
+### The EdgeConnect open question is ANSWERED
+
+The item below used to read "untested: whether a platform token can auto-generate the OAuth
+client." It cannot. Measured:
+
+```
+POST <apps>/platform/app-engine/edge-connect/v1/edge-connects
+Authorization: Bearer <dt0s16 platform token>
+→ 403 {"missingScopes":["oauth2:clients:manage"],
+       "message":"Missing permission to create OAuth client"}
+```
+
+`oauth2:clients:manage` is **not offered to platform tokens**. So EdgeConnect provisioning
+authenticates with the **OAuth client** instead, which can hold that scope. `setup.sh` now
+does exactly this, and the credential model stays at two user-supplied credentials.
+`GET` on the same endpoint works fine with a platform token (200), so reads were never the
+problem.
+
+### Fixed in this pass
+- `start.sh` crashed on line 122 with `bad substitution` before ever calling `setup.sh` —
+  `${PRIVATE_IP:-<this machine's private IP>}` in an unquoted heredoc; bash read `<` as a
+  redirection. Now a quoted heredoc with values printed separately.
+- EdgeConnect is created via API. The hardcoded-name booby trap is gone.
+- Secrets use `read -s`; only the first 7 characters are echoed back.
+- `./setup.sh --reset` clears `setup.conf`, `.env`, and `edgeConnect.yaml`.
+- Prompts reduced from 6 (plus 6 optional) to 4.
+
+### Confirmed behaviours worth keeping
+- **Host patterns must be the private IP, not a name.** EdgeConnect makes the final hop from
+  inside the VM, so the pattern must resolve *there*. A bare `bizobs-demonstrator` resolves to
+  nothing locally; the tunnel looks healthy and traffic still dies.
+- **The outbound allowlist is not needed for tunnelled traffic.** Matching happens against
+  EdgeConnect host patterns first. The allowlist also rejects private RFC 1918 IPs outright,
+  so the VM IP cannot go there regardless.
+- **The UI cannot rename an EdgeConnect.** A typo means delete and recreate, which mints a new
+  OAuth client and invalidates the downloaded YAML.
+- **Items 7-10 are not required for BizEvents to arrive.** Revenue-bearing events
+  (`order.value`, `loyalty`, `location`, correlated `order.id`) landed in Grail with those
+  checklist items undeployed, on `dt.openpipeline.pipelines: ["bizevents:default"]`. The
+  earlier claim that 7-10 are "what make business events actually work" is too strong.
+
 ### Known open items
 - `TECHNICAL-GUIDE.md` still documents the retired four-credential flow. Rewrite it only after
   one clean validated run, not before.

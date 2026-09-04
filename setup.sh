@@ -32,9 +32,24 @@ cat << 'BANNER'
 BANNER
 echo -e "${NC}"
 
+# ── Reset ───────────────────────────────────────────────────
+# ./setup.sh --reset wipes saved credentials so a mistyped value can be
+# corrected. Without this, setup.conf is reused silently and a re-run cannot
+# fix a bad credential.
+if [ "${1:-}" = "--reset" ] || [ "${1:-}" = "-r" ]; then
+  rm -f "$CONF_FILE" "$SCRIPT_DIR/.env" "$SCRIPT_DIR/edgeconnect/edgeConnect.yaml"
+  echo -e "  ${GREEN}✓ Cleared setup.conf, .env and edgeConnect.yaml — starting fresh${NC}"
+  echo ""
+fi
+
 # ── Collect credentials ─────────────────────────────────────
-# If setup.conf exists and is filled in, use it silently.
-# Otherwise, prompt interactively.
+# Two credentials come from you:
+#   1. Platform token  (dt0s16.*)  — ingest, dashboards, settings, DQL
+#   2. OAuth client    (dt0s02.*)  — app install AND EdgeConnect creation
+# The EdgeConnect OAuth client is minted automatically by Dynatrace when this
+# script creates the EdgeConnect configuration. You never see or paste it.
+#
+# If setup.conf exists and is filled in, use it silently. Otherwise, prompt.
 
 if [ -f "$CONF_FILE" ]; then
   source "$CONF_FILE"
@@ -42,6 +57,8 @@ fi
 
 # Prints a short, non-reversible hint so the user can confirm they pasted the
 # right thing without the full secret ever appearing on screen or in scrollback.
+# The character count matters: it is what catches a truncated paste, which is
+# otherwise invisible and fails much later with a confusing auth error.
 mask_secret() {
   local v="$1"
   local n=${#v}
@@ -52,6 +69,12 @@ mask_secret() {
   fi
 }
 
+# Read from /dev/tty where available so prompts survive `bash <(curl ...)`,
+# where stdin is the consumed process-substitution pipe rather than the
+# terminal. Test by actually opening it: `[ -r /dev/tty ]` returns true even
+# in contexts with no controlling terminal, where the redirect then fails.
+_tty() { if { : < /dev/tty; } 2>/dev/null; then echo "/dev/tty"; else echo "/dev/stdin"; fi; }
+
 prompt_if_missing() {
   local var_name="$1"
   local prompt_text="$2"
@@ -60,18 +83,18 @@ prompt_if_missing() {
 
   if [ -z "$current_val" ] || [ "$current_val" = "$placeholder" ]; then
     echo -ne "  ${CYAN}${prompt_text}${NC} "
-    read -r input
+    read -r input < "$(_tty)"
     if [ -z "$input" ]; then
       fail "$var_name is required. Cannot continue."
     fi
-    eval "$var_name=\"$input\""
+    printf -v "$var_name" '%s' "$input"
   fi
 }
 
 # Same as prompt_if_missing but does not echo what you type. Use this for every
 # token, client secret, or anything else that shouldn't end up in terminal
 # scrollback, a screen share, or a recorded session.
-prompt_secret_if_missing() {
+prompt_secret() {
   local var_name="$1"
   local prompt_text="$2"
   local placeholder="$3"
@@ -79,47 +102,13 @@ prompt_secret_if_missing() {
 
   if [ -z "$current_val" ] || [ "$current_val" = "$placeholder" ]; then
     echo -ne "  ${CYAN}${prompt_text}${NC} "
-    read -rs input
+    read -rs input < "$(_tty)"
     echo ""   # read -s swallows the newline the user typed
     if [ -z "$input" ]; then
       fail "$var_name is required. Cannot continue."
     fi
-    eval "$var_name=\"$input\""
+    printf -v "$var_name" '%s' "$input"
     echo -e "  ${GREEN}  → received $(mask_secret "$input")${NC}"
-  fi
-}
-
-# Optional, and treated as a secret: input is hidden. Empty input falls back to
-# the named variable.
-prompt_optional() {
-  local var_name="$1"
-  local prompt_text="$2"
-  local fallback_var="$3"
-  local current_val="${!var_name}"
-
-  if [ -z "$current_val" ]; then
-    echo -ne "  ${CYAN}${prompt_text}${NC} "
-    read -rs input
-    echo ""
-    if [ -z "$input" ]; then
-      eval "$var_name=\"${!fallback_var}\""
-      echo -e "  ${GREEN}  → Using same as EdgeConnect${NC}"
-    else
-      eval "$var_name=\"$input\""
-      echo -e "  ${GREEN}  → received $(mask_secret "$input")${NC}"
-    fi
-  fi
-}
-
-prompt_optional_blank() {
-  local var_name="$1"
-  local prompt_text="$2"
-  local current_val="${!var_name}"
-
-  if [ -z "$current_val" ]; then
-    echo -ne "  ${CYAN}${prompt_text}${NC} "
-    read -r input
-    eval "$var_name=\"$input\""
   fi
 }
 
@@ -127,13 +116,11 @@ NEED_PROMPT=false
 if [ -z "$TENANT_ID" ] || [ "$TENANT_ID" = "YOUR_TENANT_ID" ] || \
    [ -z "$ENV_TYPE" ] || \
    [ -z "$API_TOKEN" ] || [[ "$API_TOKEN" == *"XXXX"* ]] || \
-  [ -z "$DT_PLATFORM_TOKEN" ] || [[ "$DT_PLATFORM_TOKEN" == *"XXXX"* ]] || \
-   [ -z "$EC_OAUTH_CLIENT_ID" ] || [[ "$EC_OAUTH_CLIENT_ID" == *"XXXX"* ]] || \
-   [ -z "$EC_OAUTH_CLIENT_SECRET" ] || [[ "$EC_OAUTH_CLIENT_SECRET" == *"YYYY"* ]]; then
-  # Support legacy setup.conf that used OAUTH_CLIENT_ID
-  if [ -n "$OAUTH_CLIENT_ID" ] && [ -z "$EC_OAUTH_CLIENT_ID" ]; then
-    EC_OAUTH_CLIENT_ID="$OAUTH_CLIENT_ID"
-    EC_OAUTH_CLIENT_SECRET="$OAUTH_CLIENT_SECRET"
+   [ -z "$DT_PLATFORM_TOKEN" ] || [[ "$DT_PLATFORM_TOKEN" == *"XXXX"* ]] || \
+   [ -z "$DEPLOY_OAUTH_CLIENT_ID" ] || [[ "$DEPLOY_OAUTH_CLIENT_ID" == *"XXXX"* ]] || \
+   [ -z "$DEPLOY_OAUTH_CLIENT_SECRET" ] || [[ "$DEPLOY_OAUTH_CLIENT_SECRET" == *"YYYY"* ]]; then
+  # Support legacy setup.conf that used a single OAUTH_CLIENT_ID for everything
+  if [ -n "$OAUTH_CLIENT_ID" ] && [ -z "$DEPLOY_OAUTH_CLIENT_ID" ]; then
     DEPLOY_OAUTH_CLIENT_ID="$OAUTH_CLIENT_ID"
     DEPLOY_OAUTH_CLIENT_SECRET="$OAUTH_CLIENT_SECRET"
     [ -z "$ENV_TYPE" ] && ENV_TYPE="sprint"
@@ -147,13 +134,13 @@ if [ "$NEED_PROMPT" = true ]; then
   echo ""
 
   # 1. Environment type
-  echo -e "  ${CYAN}─── 1/6: Environment Type ───${NC}"
+  echo -e "  ${CYAN}─── 1/4: Environment Type ───${NC}"
   echo -e "  ${YELLOW}What kind of Dynatrace tenant are you using?${NC}"
   echo -e "  ${YELLOW}  1) Sprint   (URL like: abc12345.sprint.dynatracelabs.com)${NC}"
   echo -e "  ${YELLOW}  2) Prod/Live (URL like: abc12345.live.dynatrace.com or abc12345.apps.dynatrace.com)${NC}"
   if [ -z "$ENV_TYPE" ] || [ "$ENV_TYPE" = "YOUR_ENV_TYPE" ]; then
     echo -ne "  ${CYAN}Enter 1 or 2 [1]:${NC} "
-    read -r env_choice
+    read -r env_choice < "$(_tty)"
     case "$env_choice" in
       2) ENV_TYPE="prod" ;;
       *) ENV_TYPE="sprint" ;;
@@ -163,7 +150,7 @@ if [ "$NEED_PROMPT" = true ]; then
   echo ""
 
   # 2. Tenant ID
-  echo -e "  ${CYAN}─── 2/6: Tenant ID ───${NC}"
+  echo -e "  ${CYAN}─── 2/4: Tenant ID ───${NC}"
   if [ "$ENV_TYPE" = "sprint" ]; then
     echo -e "  ${YELLOW}Look at your Dynatrace URL: https://${BOLD}<THIS-PART>${NC}${YELLOW}.sprint.dynatracelabs.com${NC}"
   else
@@ -172,74 +159,46 @@ if [ "$NEED_PROMPT" = true ]; then
   prompt_if_missing "TENANT_ID" "Tenant ID:" "YOUR_TENANT_ID"
   echo ""
 
-  # 3. Platform token (ingest + dashboards + settings)
-  echo -e "  ${CYAN}─── 3/6: Platform Token ───${NC}"
+  # 3. Platform token (ingest + dashboards + settings + DQL)
+  echo -e "  ${CYAN}─── 3/4: Platform Token ───${NC}"
   echo -e "  ${YELLOW}Account Management → Identity & access management → Platform tokens${NC}"
   echo -e "  ${YELLOW}(myaccount.dynatrace.com — NOT your environment settings)${NC}"
   echo -e "  ${YELLOW}This one token covers ingest, dashboards, settings and DQL.${NC}"
   echo -e "  ${YELLOW}Key scopes: openpipeline:traces|metrics|logs|bizevents|events:ingest,${NC}"
   echo -e "  ${YELLOW}            document:documents:read+write, settings:objects:read+write,${NC}"
   echo -e "  ${YELLOW}            storage:buckets:read + the storage:*:read set${NC}"
-  echo -e "  ${YELLOW}Starts with: dt0s16.  (a legacy dt0c01. access token also still works)${NC}"
-  prompt_secret_if_missing "API_TOKEN" "Platform Token:" "dt0s16.XXXX..."
+  echo -e "  ${YELLOW}Starts with: dt0s16.  (input is hidden)${NC}"
+  prompt_secret "API_TOKEN" "Platform Token:" "dt0s16.XXXX..."
   echo ""
 
-  # 4. Same platform token is reused for dashboard deployment.
-  # Kept as a separate variable for back-compat with existing setup.conf files
-  # and for anyone who still wants to split ingest from dashboards.
+  # The same platform token is reused for dashboard deployment. Kept as a
+  # separate variable for back-compat with existing setup.conf files.
   if [ -z "$DT_PLATFORM_TOKEN" ] || [[ "$DT_PLATFORM_TOKEN" == *"XXXX"* ]]; then
     DT_PLATFORM_TOKEN="$API_TOKEN"
     ok "Reusing the same platform token for dashboard deployment"
     echo ""
   fi
 
-  # 5. EdgeConnect OAuth Client ID
-  echo -e "  ${CYAN}─── 4/6: EdgeConnect OAuth Client ID ───${NC}"
-  echo -e "  ${YELLOW}In your ENVIRONMENT (not Account Management):${NC}"
-  echo -e "  ${YELLOW}  Settings → General → External requests → EdgeConnect tab → + New EdgeConnect${NC}"
-  echo -e "  ${YELLOW}  Name it exactly:  bizobs-demonstrator${NC}"
-  echo -e "  ${YELLOW}  Host patterns:    this machine's private IP ($(hostname -I 2>/dev/null | awk '{print $1}'))${NC}"
-  echo -e "  ${YELLOW}Dynatrace generates a dedicated OAuth client. Download the YAML and copy${NC}"
-  echo -e "  ${YELLOW}oauth.client_id from it. Starts with dt0s10. or dt0s02.${NC}"
-  prompt_if_missing "EC_OAUTH_CLIENT_ID" "EdgeConnect OAuth Client ID:" "dt0s10.XXXX"
-  echo ""
-
-  # 6. EdgeConnect OAuth Client Secret
-  echo -e "  ${CYAN}─── 5/6: EdgeConnect OAuth Client Secret ───${NC}"
-  echo -e "  ${YELLOW}oauth.client_secret from the same downloaded YAML.${NC}"
-  echo -e "  ${YELLOW}Shown only once — a later re-download will NOT contain it.${NC}"
-  prompt_secret_if_missing "EC_OAUTH_CLIENT_SECRET" "EdgeConnect OAuth Client Secret:" "dt0s10.XXXX.YYYY..."
-  echo ""
-
-  # 7. AppEngine Deploy OAuth
-  echo -e "  ${CYAN}─── 6/6: App Install OAuth Client ───${NC}"
-  echo -e "  ${YELLOW}This installs the Demonstrator app into your tenant.${NC}"
+  # 4. OAuth client — app install AND EdgeConnect creation
+  echo -e "  ${CYAN}─── 4/4: OAuth Client ───${NC}"
   echo -e "  ${YELLOW}Account Management → Identity & access management → OAuth clients${NC}"
   echo -e "  ${YELLOW}  Grant type: Client credentials   Subject: an active user (your email)${NC}"
-  echo -e "  ${YELLOW}  Permissions: app-engine:apps:install and app-engine:apps:run${NC}"
-  echo -e "  ${RED}  NOTE: the EdgeConnect client above will NOT work here — it only has${NC}"
-  echo -e "  ${RED}  edge-connects:connect. You need a separate client for the app install.${NC}"
-  echo -e "  ${YELLOW}Press Enter to reuse the EdgeConnect client anyway (deploy will likely 403,${NC}"
-  echo -e "  ${YELLOW}but everything else still sets up and you can deploy the app later).${NC}"
-  prompt_optional "DEPLOY_OAUTH_CLIENT_ID" "App Install OAuth Client ID (Enter = reuse EC):" "EC_OAUTH_CLIENT_ID"
-  prompt_optional "DEPLOY_OAUTH_CLIENT_SECRET" "App Install OAuth Client Secret (Enter = reuse EC):" "EC_OAUTH_CLIENT_SECRET"
+  echo -e "  ${YELLOW}  Required permissions — all four:${NC}"
+  echo -e "  ${YELLOW}    app-engine:apps:install${NC}"
+  echo -e "  ${YELLOW}    app-engine:apps:run${NC}"
+  echo -e "  ${YELLOW}    app-engine:edge-connects:connect${NC}"
+  echo -e "  ${YELLOW}    oauth2:clients:manage      ${BOLD}← required to auto-create EdgeConnect${NC}"
+  echo -e "  ${YELLOW}Client ID starts with dt0s02. — secret input is hidden.${NC}"
+  prompt_if_missing "DEPLOY_OAUTH_CLIENT_ID" "OAuth Client ID:" "dt0s02.XXXX"
+  prompt_secret     "DEPLOY_OAUTH_CLIENT_SECRET" "OAuth Client Secret:" "dt0s02.XXXX.YYYY..."
   echo ""
 
-  echo -e "  ${CYAN}Optional: Access Request Auto-Provisioning (for /access-request.html)${NC}"
-  echo -e "  ${YELLOW}Press Enter to skip for now. You can fill these later in setup.conf.${NC}"
-  prompt_optional_blank "DT_ACCOUNT_ID" "Dynatrace Account ID (optional):"
-  prompt_optional_blank "DT_ACCESS_GROUP_UUID" "Access Group UUID for new users (optional):"
-  prompt_optional_blank "DT_ACCOUNT_OAUTH_CLIENT_ID" "Account OAuth Client ID (optional):"
-  prompt_optional_blank "DT_ACCOUNT_OAUTH_CLIENT_SECRET" "Account OAuth Client Secret (optional):"
-  prompt_optional_blank "DT_ACCOUNT_RESOURCE" "OAuth Resource (optional, e.g. urn:dtaccount:<id>):"
-  prompt_optional_blank "DT_ACCOUNT_TOKEN_URL" "OAuth Token URL (optional, Enter to auto by ENV_TYPE):"
-  echo ""
+  # Optional account auto-provisioning fields are intentionally NOT prompted.
+  # They are only used by the self-service /access-request.html page, which is
+  # not part of a working demo. Fill them into setup.conf directly if needed.
 fi
 
 # ── Validate credential formats (always, even from setup.conf) ──
-# Default DEPLOY creds to EdgeConnect creds if not set (backward compat)
-[ -z "$DEPLOY_OAUTH_CLIENT_ID" ] && DEPLOY_OAUTH_CLIENT_ID="$EC_OAUTH_CLIENT_ID"
-[ -z "$DEPLOY_OAUTH_CLIENT_SECRET" ] && DEPLOY_OAUTH_CLIENT_SECRET="$EC_OAUTH_CLIENT_SECRET"
 [ -z "$ENV_TYPE" ] && ENV_TYPE="sprint"
 
 # Ingest credential: accepts either a Gen3 platform token (dt0s16.*, preferred) or a
@@ -251,7 +210,7 @@ if [[ "$API_TOKEN" == dt0s16.* ]]; then
 elif [[ "$API_TOKEN" == dt0c01.* ]]; then
   INGEST_TOKEN_KIND="classic"
 else
-  fail "Ingest token must be a platform token (dt0s16.*) or a classic access token (dt0c01.*) — you entered '${API_TOKEN:0:10}...'. Delete setup.conf and re-run ./setup.sh"
+  fail "Ingest token must be a platform token (dt0s16.*) or a classic access token (dt0c01.*) — you entered '${API_TOKEN:0:10}...'. Re-run with: ./setup.sh --reset"
 fi
 
 # Dashboard deployment credential. Normally the same platform token as above.
@@ -261,80 +220,56 @@ if [[ ! "$DT_PLATFORM_TOKEN" == dt0s*.* ]] && [[ ! "$DT_PLATFORM_TOKEN" == dt0c0
   fail "DT Platform Token must be a platform token (dt0s16.*) or a classic access token (dt0c01.*). Update setup.conf and re-run ./setup.sh"
 fi
 
-# EdgeConnect OAuth — accepts dt0s10 (environment-level) or dt0s02 (account-level)
-# Some DT tenants generate dt0s02 for EdgeConnect, others dt0s10
-if [[ ! "$EC_OAUTH_CLIENT_ID" == dt0s10.* ]] && [[ ! "$EC_OAUTH_CLIENT_ID" == dt0s02.* ]]; then
-  echo -e "  ${RED}✗ EdgeConnect OAuth Client ID must start with 'dt0s10.' or 'dt0s02.'${NC}"
-  echo -e "  ${YELLOW}  You entered '${EC_OAUTH_CLIENT_ID:0:12}...'${NC}"
-  echo -e "  ${YELLOW}  Create it in: Settings → General → External requests → EdgeConnect tab → + New EdgeConnect${NC}"
-  echo -e "  ${YELLOW}  Delete setup.conf and re-run ./setup.sh${NC}"
-  exit 1
-fi
-if [[ ! "$EC_OAUTH_CLIENT_SECRET" == dt0s10.* ]] && [[ ! "$EC_OAUTH_CLIENT_SECRET" == dt0s02.* ]]; then
-  echo -e "  ${RED}✗ EdgeConnect OAuth Client Secret must start with 'dt0s10.' or 'dt0s02.'${NC}"
-  echo -e "  ${YELLOW}  Delete setup.conf and re-run ./setup.sh${NC}"
-  exit 1
-fi
+# EdgeConnect OAuth credentials are NOT validated here — they are minted by
+# Dynatrace when this script creates the EdgeConnect configuration further down.
+# Nothing is pasted by the user, so there is nothing to get wrong.
 
 # Deploy OAuth can be dt0s10 (environment-level) OR dt0s02 (account-level)
 if [[ ! "$DEPLOY_OAUTH_CLIENT_ID" == dt0s10.* ]] && [[ ! "$DEPLOY_OAUTH_CLIENT_ID" == dt0s02.* ]]; then
   echo -e "  ${RED}✗ Deploy OAuth Client ID must start with 'dt0s10.' or 'dt0s02.'${NC}"
   echo -e "  ${YELLOW}  You entered '${DEPLOY_OAUTH_CLIENT_ID:0:12}...'${NC}"
-  echo -e "  ${YELLOW}  Delete setup.conf and re-run ./setup.sh${NC}"
+  echo -e "  ${YELLOW}  Re-run with: ./setup.sh --reset${NC}"
   exit 1
 fi
 if [[ ! "$DEPLOY_OAUTH_CLIENT_SECRET" == dt0s10.* ]] && [[ ! "$DEPLOY_OAUTH_CLIENT_SECRET" == dt0s02.* ]]; then
   echo -e "  ${RED}✗ Deploy OAuth Client Secret must start with 'dt0s10.' or 'dt0s02.'${NC}"
-  echo -e "  ${YELLOW}  Delete setup.conf and re-run ./setup.sh${NC}"
+  echo -e "  ${YELLOW}  Re-run with: ./setup.sh --reset${NC}"
   exit 1
 fi
 
 # Detect swapped ID/secret — Client IDs have 2 dot-separated parts, secrets have 3
-EC_ID_DOTS=$(echo "$EC_OAUTH_CLIENT_ID" | tr -cd '.' | wc -c)
-EC_SECRET_DOTS=$(echo "$EC_OAUTH_CLIENT_SECRET" | tr -cd '.' | wc -c)
 DEPLOY_ID_DOTS=$(echo "$DEPLOY_OAUTH_CLIENT_ID" | tr -cd '.' | wc -c)
 DEPLOY_SECRET_DOTS=$(echo "$DEPLOY_OAUTH_CLIENT_SECRET" | tr -cd '.' | wc -c)
 
-if [ "$EC_ID_DOTS" -gt 1 ]; then
-  echo -e "  ${RED}✗ EdgeConnect OAuth Client ID looks like a secret (too many parts).${NC}"
-  echo -e "  ${YELLOW}  Client ID format:     dt0s10.XXXXXXXX  (2 parts)${NC}"
-  echo -e "  ${YELLOW}  Client Secret format:  dt0s10.XXXXXXXX.YYYYYYYY...  (3 parts)${NC}"
-  echo -e "  ${YELLOW}  You entered: '${EC_OAUTH_CLIENT_ID:0:20}...'${NC}"
-  echo -e "  ${YELLOW}  Delete setup.conf and re-run ./setup.sh${NC}"
-  exit 1
-fi
-if [ "$EC_SECRET_DOTS" -lt 2 ]; then
-  echo -e "  ${RED}✗ EdgeConnect OAuth Client Secret looks like a client ID (too short).${NC}"
-  echo -e "  ${YELLOW}  Client Secret format:  dt0s10.XXXXXXXX.YYYYYYYY...  (3 parts)${NC}"
-  echo -e "  ${YELLOW}  Delete setup.conf and re-run ./setup.sh${NC}"
-  exit 1
-fi
 if [ "$DEPLOY_ID_DOTS" -gt 1 ]; then
   echo -e "  ${RED}✗ Deploy OAuth Client ID looks like a secret (too many parts).${NC}"
   echo -e "  ${YELLOW}  Client ID format:     dt0s10.XXXXXXXX  (2 parts)${NC}"
   echo -e "  ${YELLOW}  Client Secret format:  dt0s10.XXXXXXXX.YYYYYYYY...  (3 parts)${NC}"
   echo -e "  ${YELLOW}  You entered: '${DEPLOY_OAUTH_CLIENT_ID:0:20}...'${NC}"
-  echo -e "  ${YELLOW}  Delete setup.conf and re-run ./setup.sh${NC}"
+  echo -e "  ${YELLOW}  Re-run with: ./setup.sh --reset${NC}"
   exit 1
 fi
 if [ "$DEPLOY_SECRET_DOTS" -lt 2 ]; then
   echo -e "  ${RED}✗ Deploy OAuth Client Secret looks like a client ID (too short).${NC}"
   echo -e "  ${YELLOW}  Client Secret format:  dt0s10.XXXXXXXX.YYYYYYYY...  (3 parts)${NC}"
-  echo -e "  ${YELLOW}  Delete setup.conf and re-run ./setup.sh${NC}"
+  echo -e "  ${YELLOW}  Re-run with: ./setup.sh --reset${NC}"
   exit 1
 fi
 
-# Save valid credentials for future runs
-if [ "$NEED_PROMPT" = true ]; then
+# Save valid credentials for future runs.
+# EC_OAUTH_* are written later, after the EdgeConnect is created, by save_conf().
+save_conf() {
   cat > "$CONF_FILE" << EOF
 ENV_TYPE="$ENV_TYPE"
 TENANT_ID="$TENANT_ID"
 API_TOKEN="$API_TOKEN"
 DT_PLATFORM_TOKEN="$DT_PLATFORM_TOKEN"
-EC_OAUTH_CLIENT_ID="$EC_OAUTH_CLIENT_ID"
-EC_OAUTH_CLIENT_SECRET="$EC_OAUTH_CLIENT_SECRET"
 DEPLOY_OAUTH_CLIENT_ID="$DEPLOY_OAUTH_CLIENT_ID"
 DEPLOY_OAUTH_CLIENT_SECRET="$DEPLOY_OAUTH_CLIENT_SECRET"
+EC_OAUTH_CLIENT_ID="$EC_OAUTH_CLIENT_ID"
+EC_OAUTH_CLIENT_SECRET="$EC_OAUTH_CLIENT_SECRET"
+EDGECONNECT_NAME="$EDGECONNECT_NAME"
+EDGECONNECT_ID="$EDGECONNECT_ID"
 DT_ACCOUNT_ID="$DT_ACCOUNT_ID"
 DT_ACCESS_GROUP_UUID="$DT_ACCESS_GROUP_UUID"
 DT_ACCOUNT_OAUTH_CLIENT_ID="$DT_ACCOUNT_OAUTH_CLIENT_ID"
@@ -342,7 +277,12 @@ DT_ACCOUNT_OAUTH_CLIENT_SECRET="$DT_ACCOUNT_OAUTH_CLIENT_SECRET"
 DT_ACCOUNT_RESOURCE="$DT_ACCOUNT_RESOURCE"
 DT_ACCOUNT_TOKEN_URL="$DT_ACCOUNT_TOKEN_URL"
 EOF
-  ok "Saved to setup.conf (won't ask again)"
+  chmod 600 "$CONF_FILE"
+}
+
+if [ "$NEED_PROMPT" = true ]; then
+  save_conf
+  ok "Saved to setup.conf (won't ask again — use ./setup.sh --reset to start over)"
 fi
 
 # Derive URLs based on environment type
@@ -560,10 +500,125 @@ EOF
 ok "Created .dt-credentials.json"
 
 # ── Step 4: EdgeConnect ────────────────────────────────────
-step "Step 4/6: Starting EdgeConnect"
+step "Step 4/6: Creating and starting EdgeConnect"
 
+# The EdgeConnect configuration is created via API rather than by hand in the
+# Dynatrace UI. This removes the single worst failure mode in the old flow: the
+# configuration name had to match a hardcoded literal exactly, nothing validated
+# it, and a one-character typo produced a tunnel that started, looked healthy,
+# and never associated.
+#
+# IMPORTANT — why the OAuth client and not the platform token:
+# creating an EdgeConnect makes Dynatrace mint a dedicated OAuth client for the
+# tunnel, which requires the oauth2:clients:manage scope. That scope is NOT
+# offered to platform tokens. Verified against a live Gen3 sprint tenant:
+#   POST .../edge-connects with a dt0s16 platform token
+#   → 403 {"missingScopes":["oauth2:clients:manage"],
+#          "message":"Missing permission to create OAuth client"}
+# So this step authenticates with the OAuth client instead.
+EDGECONNECT_NAME="${EDGECONNECT_NAME:-bizobs-demonstrator}"
+EC_API="$APPS_URL/platform/app-engine/edge-connect/v1/edge-connects"
+
+# The host pattern is this machine's private IP. It must be the IP and not a
+# hostname: EdgeConnect performs the final hop from inside this VM, so the
+# pattern has to be something that resolves here. A bare name like
+# "bizobs-demonstrator" resolves to nothing locally and the request dies after
+# a tunnel that otherwise looks perfectly healthy.
+echo "  Requesting OAuth token for EdgeConnect provisioning..."
+EC_MGMT_TOKEN=$(curl -s -X POST "$SSO_URL" \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d "grant_type=client_credentials" \
+  -d "client_id=${DEPLOY_OAUTH_CLIENT_ID}" \
+  -d "client_secret=${DEPLOY_OAUTH_CLIENT_SECRET}" \
+  -d "scope=oauth2:clients:manage app-engine:edge-connects:write app-engine:edge-connects:read" \
+  -d "resource=urn:dtenvironment:${TENANT_ID}" \
+  | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+
+if [ -z "$EC_MGMT_TOKEN" ]; then
+  echo -e "  ${RED}✗ Could not get an OAuth token with oauth2:clients:manage${NC}"
+  echo -e "  ${YELLOW}  Your OAuth client is missing a required permission.${NC}"
+  echo -e "  ${YELLOW}  Account Management → IAM → OAuth clients → your client → add:${NC}"
+  echo -e "  ${YELLOW}      oauth2:clients:manage${NC}"
+  echo -e "  ${YELLOW}      app-engine:edge-connects:write${NC}"
+  echo -e "  ${YELLOW}      app-engine:edge-connects:read${NC}"
+  echo -e "  ${YELLOW}  Then re-run: ./setup.sh${NC}"
+  fail "EdgeConnect provisioning cannot continue without that scope."
+fi
+ok "OAuth token acquired"
+
+# Reuse the stored EdgeConnect credentials when the configuration still exists
+# in the tenant. The client secret is returned only once at creation and cannot
+# be read back, so if the config is gone (or we never stored a secret) the only
+# correct move is to delete any same-named leftover and create a fresh one.
+EC_REUSED=false
+if [ -n "$EC_OAUTH_CLIENT_SECRET" ] && [ -n "$EDGECONNECT_ID" ]; then
+  EXISTING_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $EC_MGMT_TOKEN" "$EC_API/$EDGECONNECT_ID")
+  if [ "$EXISTING_CODE" = "200" ]; then
+    ok "Reusing existing EdgeConnect '$EDGECONNECT_NAME'"
+    EC_REUSED=true
+  fi
+fi
+
+if [ "$EC_REUSED" = false ]; then
+  # Remove any leftover configuration using our name. Its secret is
+  # unrecoverable, so it is dead weight and would also collide on create.
+  EXISTING_JSON=$(curl -s -H "Authorization: Bearer $EC_MGMT_TOKEN" "$EC_API")
+  for stale_id in $(echo "$EXISTING_JSON" | python3 -c "
+import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+items = d.get('edgeConnects', d if isinstance(d, list) else [])
+for e in items:
+    if e.get('name') == '${EDGECONNECT_NAME}':
+        print(e['id'])
+" 2>/dev/null); do
+    echo "  Removing stale EdgeConnect $stale_id..."
+    curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $EC_MGMT_TOKEN" "$EC_API/$stale_id"
+  done
+
+  echo "  Creating EdgeConnect '$EDGECONNECT_NAME' → host pattern $PRIVATE_IP ..."
+  EC_CREATE_BODY=$(printf '{"name":"%s","hostPatterns":["%s"]}' "$EDGECONNECT_NAME" "$PRIVATE_IP")
+  EC_RESPONSE=$(curl -s -X POST "$EC_API" \
+    -H "Authorization: Bearer $EC_MGMT_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "$EC_CREATE_BODY")
+
+  EC_PARSED=$(echo "$EC_RESPONSE" | python3 -c "
+import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print('PARSE_ERROR'); sys.exit(0)
+if 'error' in d:
+    print('ERROR|' + str(d['error'].get('message','unknown')))
+else:
+    print('OK|%s|%s|%s' % (d.get('id',''), d.get('oauthClientId',''), d.get('oauthClientSecret','')))
+" 2>/dev/null)
+
+  case "$EC_PARSED" in
+    OK\|*)
+      IFS='|' read -r _ EDGECONNECT_ID EC_OAUTH_CLIENT_ID EC_OAUTH_CLIENT_SECRET <<< "$EC_PARSED"
+      if [ -z "$EC_OAUTH_CLIENT_SECRET" ]; then
+        fail "EdgeConnect was created but no client secret came back. Delete it in the UI and re-run ./setup.sh"
+      fi
+      ok "EdgeConnect created (client ${EC_OAUTH_CLIENT_ID})"
+      save_conf   # persist the generated secret immediately — it is shown once
+      ;;
+    ERROR\|*)
+      fail "EdgeConnect creation failed: ${EC_PARSED#ERROR|}"
+      ;;
+    *)
+      fail "Unexpected response creating EdgeConnect. Re-run with ./setup.sh --reset"
+      ;;
+  esac
+fi
+
+mkdir -p "$SCRIPT_DIR/edgeconnect"
 cat > "$SCRIPT_DIR/edgeconnect/edgeConnect.yaml" << EOF
-name: bizobs-demonstrator
+name: ${EDGECONNECT_NAME}
 api_endpoint_host: $(echo "$APPS_URL" | sed 's|https://||')
 oauth:
   client_id: ${EC_OAUTH_CLIENT_ID}
@@ -571,6 +626,7 @@ oauth:
   resource: urn:dtenvironment:${TENANT_ID}
   endpoint: ${SSO_URL}
 EOF
+chmod 600 "$SCRIPT_DIR/edgeconnect/edgeConnect.yaml"
 ok "EdgeConnect YAML generated"
 
 CONTAINER_NAME="edgeconnect-bizobs"

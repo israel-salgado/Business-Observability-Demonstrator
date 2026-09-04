@@ -193,7 +193,7 @@ printf 'metrics   : '; curl -s -o /dev/null -w '%{http_code}\n' -X POST "$INGEST
 
 **2xx or 400 means auth is fine.** 401 or 403 means the token or its scopes are wrong.
 
-## 1.4 ⬜ Create the OAuth client
+## 1.4 ✅ Create the OAuth client
 
 **Account Management → Identity & access management → OAuth clients → Create OAuth client**
 
@@ -204,93 +204,86 @@ printf 'metrics   : '; curl -s -o /dev/null -w '%{http_code}\n' -X POST "$INGEST
 | **Subject user email** | your email |
 | **Description** | `Business Observability Demonstrator` |
 
-Tick exactly three permissions, all under **App Engine**:
+Tick **four** permissions:
 
 ```
-Connect EdgeConnect   → app-engine:edge-connects:connect
 Install apps          → app-engine:apps:install
 Run apps              → app-engine:apps:run
+Connect EdgeConnect   → app-engine:edge-connects:connect
+Manage OAuth clients  → oauth2:clients:manage
 ```
 
-**Record as `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET`.**
+**Record as `DEPLOY_OAUTH_CLIENT_ID` and `DEPLOY_OAUTH_CLIENT_SECRET`.**
 
-> **Why a second credential is unavoidable.** `app-engine:edge-connects:connect` is the
-> permission an EdgeConnect instance uses to establish its tunnel, and it is **not offered to
-> platform tokens** — only to OAuth clients. Everything else the demonstrator needs is
-> covered by the platform token from 1.2.
+> ### Why `oauth2:clients:manage` is on this list
+> `setup.sh` creates the EdgeConnect configuration for you via the API, which removes the
+> most error-prone step in the old flow. Creating an EdgeConnect makes Dynatrace mint a
+> dedicated OAuth client for the tunnel, and minting a client requires
+> `oauth2:clients:manage`.
+>
+> **That scope is not offered to platform tokens.** Verified against a live Gen3 sprint
+> tenant on 2026-09-04 — posting to the EdgeConnect endpoint with a `dt0s16` platform token
+> returns:
+>
+> ```json
+> 403 {"missingScopes":["oauth2:clients:manage"],
+>      "message":"Missing permission to create OAuth client"}
+> ```
+>
+> This is why EdgeConnect provisioning authenticates with the OAuth client rather than the
+> platform token. It is also why you still need two credentials rather than one.
 
 > **If `app-engine:apps:install` is missing from this list**, your tenant can't install custom
 > apps. Stop here and sort that out before going further.
 
-## 1.5 ⬜ Create the EdgeConnect configuration
+## 1.5 — EdgeConnect: nothing to do
 
-This one is in your **environment**, not Account Management.
+**You no longer create an EdgeConnect by hand.** `setup.sh` does all of it:
 
-> **There is no EdgeConnect app.** Searching "EdgeConnect" routes you to a settings page.
-> Go to **Settings → General → External requests**, then pick the **EdgeConnect** tab
-> (the other tab is the allowlist), then **+ New EdgeConnect**.
+- creates the configuration named `bizobs-demonstrator`
+- sets the host pattern to this machine's private IP, detected automatically
+- captures the generated OAuth credentials straight from the API response
+- writes `edgeconnect/edgeConnect.yaml` and starts the container
 
-### First, get the VM's private IP
-
-You need it for the host pattern, so run this on the Linux machine before you start:
-
-```bash
-hostname -I | awk '{print $1}'
-```
-
-### Then fill the form
-
-The form has exactly two fields.
-
-| Field | Value |
-|---|---|
-| **Name** | `bizobs-demonstrator` |
-| **Host patterns** | the VM's private IP from above |
-
-> ### The name must match exactly
-> ```
-> bizobs-demonstrator
-> ```
-> `setup.sh` writes that exact string into `edgeconnect/edgeConnect.yaml` as a hardcoded
-> literal. If the name differs by even one character, the tunnel will start and appear
-> healthy but never associate, and the failure surfaces much later as a vague failed
-> connection test in the app. Nothing validates this for you.
+> ### Why this step was automated
+> The name in the Dynatrace configuration had to match a hardcoded literal in `setup.sh`
+> exactly, and **nothing validated it**. A one-character typo (`bizops` for `bizobs`) produced
+> a tunnel that authenticated fine, started cleanly, and never associated — surfacing much
+> later as a vague failed connection test. The container log was the only place the real cause
+> appeared:
 >
-> The name must be RFC 1123 label compliant, max 50 characters. `bizobs-demonstrator`
-> qualifies (lowercase alphanumeric plus hyphens).
+> ```
+> EdgeConnect 'bizobs-demonstrator' is not configured for tenant 'abc12345'
+> ```
+>
+> Compounding it, **the Dynatrace UI does not let you rename an EdgeConnect.** Fixing a typo
+> means deleting and recreating, which mints a *new* OAuth client and invalidates the YAML you
+> already downloaded.
 
-**About host patterns.** They are **required**, and a given pattern can belong to only one
-EdgeConnect configuration. They live in this Dynatrace-side config, not in the YAML, which is
-why the YAML `setup.sh` generates contains only the name and the OAuth block. The `name` field
-is what links the two together. Wildcards are supported (`*.example.org`) but a plain private
-IP is what you want here.
+> ### The host pattern must be the IP, not a name
+> EdgeConnect makes the final hop from *inside* your VM, so the host pattern has to be
+> something that resolves there. A bare name like `bizobs-demonstrator` resolves to nothing
+> locally, and the request dies after a tunnel that looks perfectly healthy. `setup.sh` uses
+> `hostname -I` and always sets the private IP.
 
-### Download the YAML immediately
-
-Click **Download** as soon as the configuration is created.
-
-> **The OAuth client secret is displayed once and cannot be retrieved.** You can re-download
-> the config file later, but the secret will no longer be in it. If you miss it, delete the
-> EdgeConnect configuration and create it again.
-
-Dynatrace **auto-generates a dedicated OAuth client** for each EdgeConnect configuration.
-There is no option to point it at the client you made in 1.4. That's expected: the 1.4 client
-is for the **app deploy**, this generated one is for the **tunnel**. `setup.sh` prompts for the
-two pairs separately.
-
-From the downloaded YAML, record:
-- `oauth.client_id` → **`EC_OAUTH_CLIENT_ID`**
-- `oauth.client_secret` → **`EC_OAUTH_CLIENT_SECRET`**
+> ### You do not need the outbound allowlist
+> `Settings → General → External requests` has a second tab, an allowlist for outbound
+> connections. **Tunnelled traffic does not need an entry there.** A request is matched
+> against EdgeConnect host patterns first; only if nothing matches does it fall through to the
+> allowlist. Note that the allowlist rejects private RFC 1918 addresses outright
+> ("must be within the public range"), so trying to add your VM's IP there will fail — and it
+> is not what you want anyway.
 
 ## Phase 1 checklist
 
 - [x] Tenant ID and `ENV_TYPE` recorded
 - [x] `PLATFORM_TOKEN` created (`dt0s16.…`)
 - [x] Ingest verified with `Bearer`
-- [ ] `DEPLOY_OAUTH_CLIENT_ID` / `SECRET` created (the 1.4 client, for the app deploy)
-- [ ] VM private IP noted (`hostname -I | awk '{print $1}'`)
-- [ ] EdgeConnect created, named exactly `bizobs-demonstrator`, host pattern = private IP
-- [ ] `edgeConnect.yaml` downloaded, and `EC_OAUTH_CLIENT_ID` / `SECRET` recorded from it
+- [ ] OAuth client created with **all four** permissions, including `oauth2:clients:manage`
+- [ ] `DEPLOY_OAUTH_CLIENT_ID` / `DEPLOY_OAUTH_CLIENT_SECRET` recorded
+
+Nothing else. EdgeConnect, its OAuth client, the host pattern, and the YAML are all handled by
+`setup.sh`.
 
 ---
 
@@ -317,22 +310,29 @@ prompts you for each value in turn.
 BRANCH=main INSTALL_DIR=/opt/bizobs bash <(curl -fsSL .../start.sh)
 ```
 
-## 2.2 ⬜ Answer the six prompts
+## 2.2 ⬜ Answer the four prompts
 
 | # | Prompt | Value |
 |---|---|---|
 | 1 | Environment type | `1` for sprint, `2` for prod |
 | 2 | Tenant ID | the `abc12345` part of your URL |
 | 3 | Platform token | `dt0s16.…` from Phase 1.2 |
-| 4 | EdgeConnect OAuth Client ID | `oauth.client_id` from the downloaded YAML |
-| 5 | EdgeConnect OAuth Client Secret | `oauth.client_secret` from the same YAML |
-| 6 | App install OAuth client ID + secret | from Phase 1.4 |
+| 4 | OAuth client ID + secret | from Phase 1.4 |
 
-The platform token is used for **both** telemetry ingest and dashboard deployment, so you're
-only asked for it once.
+That is the whole list. Token and secret input is **hidden as you type** — the script echoes
+back only the first seven characters (`dt0s16.…`) so you can confirm you pasted the right kind
+of credential without it landing in your scrollback.
 
-Then it offers an optional block of account-provisioning fields. **Press Enter through all of
-them.** They're only for the self-service access-request feature.
+The platform token is used for ingest *and* dashboard deployment, so you are only asked once.
+There is no prompt for EdgeConnect credentials: they do not exist until `setup.sh` creates the
+EdgeConnect, and it reads them straight out of the API response.
+
+> **Made a typo?** Re-running plain `./setup.sh` reuses the saved `setup.conf` and will not
+> ask again. To start over:
+> ```bash
+> ./setup.sh --reset
+> ```
+> That clears `setup.conf`, `.env`, and the generated `edgeConnect.yaml`.
 
 ## 2.3 ⬜ Watch for these lines
 
@@ -394,8 +394,14 @@ Being tracked in `MVP-TEST-LOG.md` and fixed as we go.
 
 | Issue | Status |
 |---|---|
-| EdgeConnect name is a hardcoded literal with no validation | Open, should become a prompt |
-| `setup.sh` prompt counter mislabels itself (1/6, 2/6, 3/6, then 4/7, 5/7, 6/7) | Open, cosmetic |
+| EdgeConnect name is a hardcoded literal with no validation | **Fixed 2026-09-04** — `setup.sh` creates the EdgeConnect via API; the name is never typed by a human |
+| Manual EdgeConnect creation + YAML download | **Fixed 2026-09-04** — fully automated, credentials read from the create response |
+| Tokens echoed in clear text at the prompts | **Fixed 2026-09-04** — `read -s`, only the first 7 chars are shown back |
+| No way to correct a mistyped credential on re-run | **Fixed 2026-09-04** — `./setup.sh --reset` |
+| `start.sh` crashed with `bad substitution` before reaching `setup.sh` | **Fixed 2026-09-04** — angle brackets in a `${var:-default}` inside an unquoted heredoc |
+| `setup.sh` prompt counter mislabels itself | **Fixed 2026-09-04** — now a straight 1/4 → 4/4 |
+| Prompt 6 silently reused the EdgeConnect client for the app install | **Fixed 2026-09-04** — that prompt no longer exists |
 | `TECHNICAL-GUIDE.md` still documents the old four-credential classic flow | Open, rewrite after a clean run |
 | The four AI agents still require Ollama; they don't use the AI Provider setting | Open, by design for now |
 | `deployment-guide/` still contains pre-June-2026 instructions | Open |
+| Checklist items 7-10 not yet validated | Open — BizEvents with revenue *do* arrive without them, landing on `bizevents:default` |
