@@ -7,13 +7,13 @@
 #  Order matters: tenant cleanup runs FIRST, because it needs the credentials
 #  in setup.conf, and the last step deletes the directory those live in.
 #
-#    1. Dynatrace tenant  — the app, and the EdgeConnect configuration
-#    2. systemd units     — stopped and disabled before anything is killed
-#    3. Server process
-#    4. EdgeConnect container and image
-#    5. Log-cleanup cron job
-#    6. Ollama (only with --all)
-#    7. The project directory
+#    1. Dynatrace tenant  — the app, and the EdgeConnect configuration (no sudo)
+#    2. Background services — stopped and disabled first (needs sudo)
+#    3. Server process    — (no sudo)
+#    4. Tunnel container and image — (sudo only if not in the docker group)
+#    5. Scheduled log cleanup — (no sudo)
+#    6. Ollama — only if installed, and only with --all (needs sudo)
+#    7. The project folder — (no sudo)
 #
 #  Usage:
 #    ./uninstall.sh                 # everything except Ollama
@@ -38,10 +38,17 @@ for arg in "$@"; do
   esac
 done
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; DIM='\033[2m'; BOLD='\033[1m'; NC='\033[0m'
 ok()   { echo -e "  ${GREEN}✓ $1${NC}"; }
 warn() { echo -e "  ${YELLOW}⚠ $1${NC}"; }
 info() { echo -e "  ${CYAN}→ $1${NC}"; }
+
+# Say why an administrator password is about to be needed, before asking for it.
+# "sudo: a password is required" on its own tells you nothing about what is being
+# done to your machine, and this script removes things.
+needs_sudo() {
+  echo -e "  ${DIM}Administrator access needed: $1${NC}"
+}
 
 echo -e "${BOLD}"
 echo "╔══════════════════════════════════════════════════════════════╗"
@@ -60,7 +67,9 @@ echo ""
 
 # ── 1. Dynatrace tenant ─────────────────────────────────────
 # First, because it needs setup.conf and step 7 deletes it.
-echo -e "${BOLD}[1/7] Dynatrace tenant${NC}"
+echo -e "${BOLD}[1/7] Your Dynatrace tenant${NC}"
+echo -e "  ${DIM}No administrator password needed here — this talks to Dynatrace over${NC}"
+echo -e "  ${DIM}the internet using the OAuth client from setup, not to this machine.${NC}"
 
 if [ "$HOST_ONLY" = true ]; then
   info "Skipped (--host-only)"
@@ -190,26 +199,37 @@ fi
 # Before killing anything: systemd would otherwise restart the server we are
 # about to stop, and the old uninstaller deleted the project directory out from
 # under a service that was still enabled.
-echo -e "${BOLD}[2/7] systemd units${NC}"
+echo -e "${BOLD}[2/7] Background services${NC}"
 
 if command -v systemctl >/dev/null 2>&1; then
+  FOUND_UNITS=""
   for unit in bizobs-server.service bizobs-log-guard.timer bizobs-log-guard.service; do
-    if systemctl list-unit-files 2>/dev/null | grep -q "^${unit}"; then
-      sudo systemctl disable --now "$unit" >/dev/null 2>&1 || true
-      ok "Stopped and disabled $unit"
-    fi
+    systemctl list-unit-files 2>/dev/null | grep -q "^${unit}" && FOUND_UNITS="$FOUND_UNITS $unit"
   done
-  sudo rm -f /etc/systemd/system/bizobs-server.service \
-             /etc/systemd/system/bizobs-log-guard.service \
-             /etc/systemd/system/bizobs-log-guard.timer 2>/dev/null || true
-  sudo systemctl daemon-reload >/dev/null 2>&1 || true
-  ok "Unit files removed"
+
+  if [ -n "$FOUND_UNITS" ]; then
+    needs_sudo "turning off the services that start the Demonstrator automatically,"
+    echo -e "  ${DIM}and deleting their definitions from the system folder. Without this${NC}"
+    echo -e "  ${DIM}the server would start itself again after a reboot.${NC}"
+    for unit in $FOUND_UNITS; do
+      sudo systemctl disable --now "$unit" >/dev/null 2>&1 || true
+      ok "Turned off $unit"
+    done
+    sudo rm -f /etc/systemd/system/bizobs-server.service \
+               /etc/systemd/system/bizobs-log-guard.service \
+               /etc/systemd/system/bizobs-log-guard.timer 2>/dev/null || true
+    sudo systemctl daemon-reload >/dev/null 2>&1 || true
+    ok "Service definitions removed"
+  else
+    ok "No Demonstrator services installed"
+  fi
 else
-  ok "No systemd on this host"
+  ok "No systemd on this host — nothing to turn off"
 fi
 
 # ── 3. Server process ───────────────────────────────────────
-echo -e "${BOLD}[3/7] Server process${NC}"
+echo -e "${BOLD}[3/7] The Demonstrator server${NC}"
+echo -e "  ${DIM}No administrator password needed — the server runs as you.${NC}"
 
 if [[ -f "$SCRIPT_DIR/server.pid" ]]; then
   PID="$(cat "$SCRIPT_DIR/server.pid")"
@@ -247,25 +267,38 @@ if command -v ss >/dev/null 2>&1 && ss -tln 2>/dev/null | grep -q ':8080 '; then
 fi
 
 # ── 4. EdgeConnect container ────────────────────────────────
-echo -e "${BOLD}[4/7] EdgeConnect container${NC}"
+echo -e "${BOLD}[4/7] Tunnel container${NC}"
 
 if command -v docker >/dev/null 2>&1; then
-  if sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^edgeconnect-bizobs$'; then
-    sudo docker rm -f edgeconnect-bizobs >/dev/null 2>&1 || true
-    ok "Removed edgeconnect-bizobs container"
+  # Use plain `docker` when this user is in the docker group; only reach for an
+  # administrator password when that is not the case.
+  if docker info >/dev/null 2>&1; then
+    DOCKER="docker"
   else
-    ok "No EdgeConnect container found"
+    DOCKER="sudo docker"
+    needs_sudo "removing the tunnel container and its downloaded image."
+    echo -e "  ${DIM}Docker normally requires it unless your account is in the 'docker' group.${NC}"
   fi
-  if sudo docker images --format '{{.Repository}}' 2>/dev/null | grep -q 'dynatrace/edgeconnect'; then
-    sudo docker rmi dynatrace/edgeconnect:latest >/dev/null 2>&1 || true
-    ok "Removed EdgeConnect image"
+
+  if $DOCKER ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^edgeconnect-bizobs$'; then
+    $DOCKER rm -f edgeconnect-bizobs >/dev/null 2>&1 || true
+    ok "Removed the EdgeConnect tunnel container"
+  else
+    ok "No tunnel container present"
+  fi
+  if $DOCKER images --format '{{.Repository}}' 2>/dev/null | grep -q 'dynatrace/edgeconnect'; then
+    $DOCKER rmi dynatrace/edgeconnect:latest >/dev/null 2>&1 || true
+    ok "Removed the downloaded EdgeConnect image"
+  else
+    ok "No EdgeConnect image to remove"
   fi
 else
   ok "Docker not installed — nothing to remove"
 fi
 
 # ── 5. Cron job ─────────────────────────────────────────────
-echo -e "${BOLD}[5/7] Log-cleanup cron job${NC}"
+echo -e "${BOLD}[5/7] Scheduled log cleanup${NC}"
+echo -e "  ${DIM}No administrator password needed — this is your own schedule, not the system's.${NC}"
 
 if command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -q 'log-cleanup.sh'; then
   (crontab -l 2>/dev/null || true) | (grep -v 'log-cleanup.sh' || true) | crontab -
@@ -275,26 +308,29 @@ else
 fi
 
 # ── 6. Ollama ───────────────────────────────────────────────
-echo -e "${BOLD}[6/7] Ollama${NC}"
+echo -e "${BOLD}[6/7] Ollama (optional local AI)${NC}"
 
-if [ "$REMOVE_OLLAMA" = true ]; then
-  if command -v ollama >/dev/null 2>&1; then
-    sudo systemctl disable --now ollama >/dev/null 2>&1 || true
-    sudo rm -f /usr/local/bin/ollama
-    sudo rm -rf /usr/share/ollama 2>/dev/null || true
-    rm -rf "$HOME/.ollama" 2>/dev/null || true   # $HOME, not a hardcoded ec2-user path
-    sudo userdel ollama 2>/dev/null || true
-    sudo groupdel ollama 2>/dev/null || true
-    ok "Ollama removed"
-  else
-    ok "Ollama not installed"
-  fi
+# Check whether it is even here before reporting anything. Saying "Kept" when it
+# was never installed reads as though this script chose to leave something
+# behind, and setup.sh never installs Ollama in the first place.
+if ! command -v ollama >/dev/null 2>&1; then
+  ok "Not installed — nothing to remove"
+elif [ "$REMOVE_OLLAMA" = true ]; then
+  needs_sudo "removing the Ollama program, its models, and the user account it created."
+  sudo systemctl disable --now ollama >/dev/null 2>&1 || true
+  sudo rm -f /usr/local/bin/ollama
+  sudo rm -rf /usr/share/ollama 2>/dev/null || true
+  rm -rf "$HOME/.ollama" 2>/dev/null || true   # $HOME, not a hardcoded ec2-user path
+  sudo userdel ollama 2>/dev/null || true
+  sudo groupdel ollama 2>/dev/null || true
+  ok "Ollama removed"
 else
-  info "Kept (use --all to remove it)"
+  info "Installed and left alone (use --all to remove it too)"
 fi
 
 # ── 7. Project directory ────────────────────────────────────
-echo -e "${BOLD}[7/7] Project directory${NC}"
+echo -e "${BOLD}[7/7] The project folder${NC}"
+echo -e "  ${DIM}No administrator password needed — the folder belongs to you.${NC}"
 
 if [ "$KEEP_REPO" = true ]; then
   info "Kept at $SCRIPT_DIR (--keep-repo)"
