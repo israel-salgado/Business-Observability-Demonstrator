@@ -10,6 +10,22 @@ tenant-configs-backup.json
 edgeConnect.yaml
 package-lock.json
 
+# Generated at setup time from app.config.template.json. Contains
+# environmentUrl, which is specific to whoever ran setup — tracking it meant
+# every clone shipped with a stranger's tenant and every run dirtied the tree.
+app.config.json
+
+# Local working notes. Referenced in the docs as gitignored; they were not
+# actually ignored, so a partner following the instructions would have
+# committed their own session notes.
+MVP-TEST-LOG.md
+PROJECT-MEMORY.md
+
+# Local AI assistant state and settings (never source)
+.claude/
+.claude-*/
+CLAUDE.local.md
+
 # TypeScript compiled output
 dist/
 

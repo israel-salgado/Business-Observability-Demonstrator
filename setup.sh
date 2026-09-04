@@ -658,9 +658,19 @@ cd "$SCRIPT_DIR"
 export DT_APP_OAUTH_CLIENT_ID="$DEPLOY_OAUTH_CLIENT_ID"
 export DT_APP_OAUTH_CLIENT_SECRET="$DEPLOY_OAUTH_CLIENT_SECRET"
 
-# Update app.config.json environmentUrl to match the target tenant
-sed -i "s|\"environmentUrl\":.*|\"environmentUrl\": \"${APPS_URL}/\",|" "$SCRIPT_DIR/app.config.json"
-ok "app.config.json updated → $APPS_URL"
+# Generate app.config.json from the tracked template.
+#
+# app.config.json is deliberately NOT in git: it carries environmentUrl, which
+# is tenant-specific. When it was tracked, the repo shipped with whoever last
+# ran setup, every partner cloned a stranger's tenant URL, and every run left a
+# dirty working tree that was easy to commit by accident. The template holds a
+# __ENVIRONMENT_URL__ placeholder and this step fills it in.
+if [ ! -f "$SCRIPT_DIR/app.config.template.json" ]; then
+  fail "app.config.template.json is missing — cannot generate app.config.json"
+fi
+sed "s|__ENVIRONMENT_URL__|${APPS_URL}/|" \
+  "$SCRIPT_DIR/app.config.template.json" > "$SCRIPT_DIR/app.config.json"
+ok "app.config.json generated → $APPS_URL"
 
 echo "  Building and deploying (this takes ~30 seconds)..."
 DEPLOY_OUTPUT=$(npx dt-app deploy --non-interactive 2>&1)
