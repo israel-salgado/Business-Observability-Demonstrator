@@ -241,9 +241,22 @@ Manage OAuth clients    → oauth2:clients:manage
 | `edge-connects:read` / `:write` | `setup.sh` creates the EdgeConnect and sets its host pattern |
 | `oauth2:clients:manage` | Creating an EdgeConnect mints an OAuth client for the tunnel |
 
-**Optional:** `app-engine:apps:delete` lets you uninstall the app with
-`npx dt-app uninstall` instead of clicking through the UI. Nothing in setup needs it, and you
-can remove the app from **Hub → Manage** without it.
+**Optional extras.** Neither is needed for setup to succeed:
+
+| Permission | What it buys you |
+|---|---|
+| `app-engine:apps:delete` | `npx dt-app uninstall` instead of clicking through **Hub → Manage** |
+| `app-engine:edge-connects:delete` | Setup cleans up a leftover EdgeConnect with the same name instead of stopping and asking you to delete it |
+
+> ### Scopes are granted all-or-nothing
+> Dynatrace SSO does not issue a token with the subset you happen to have. Ask for four
+> scopes while holding three and the **entire request fails** with a bare
+> `400 invalid_request` and an empty `error_description` — nothing indicates which scope was
+> the problem.
+>
+> This is why `setup.sh` requests the optional `edge-connects:delete` as a *separate* token
+> rather than bundling it: bundling would break setup for anyone who ticked exactly the six
+> required boxes. If you are testing scopes by hand, request **one at a time**.
 
 > **All of these are requested together in a single token call**, so a missing one fails the
 > whole request rather than degrading. If `setup.sh` stops at the EdgeConnect step, a scope is

@@ -94,6 +94,10 @@ prompt_if_missing() {
 # Same as prompt_if_missing but does not echo what you type. Use this for every
 # token, client secret, or anything else that shouldn't end up in terminal
 # scrollback, a screen share, or a recorded session.
+#
+# Echoes one '*' per character as you type. Plain `read -s` shows nothing at
+# all, which is indistinguishable from a paste that silently failed — you press
+# Enter and hope. The asterisks confirm input is arriving without revealing it.
 prompt_secret() {
   local var_name="$1"
   local prompt_text="$2"
@@ -101,9 +105,30 @@ prompt_secret() {
   local current_val="${!var_name}"
 
   if [ -z "$current_val" ] || [ "$current_val" = "$placeholder" ]; then
+    local src input='' char
+    src="$(_tty)"
     echo -ne "  ${CYAN}${prompt_text}${NC} "
-    read -rs input < "$(_tty)"
-    echo ""   # read -s swallows the newline the user typed
+
+    if [ "$src" = "/dev/tty" ]; then
+      # Character at a time so we can draw the asterisks ourselves.
+      while IFS= read -rsn1 char; do
+        [ -z "$char" ] && break                      # Enter
+        if [ "$char" = $'\177' ] || [ "$char" = $'\b' ]; then
+          if [ -n "$input" ]; then
+            input="${input%?}"
+            echo -ne '\b \b'                          # rub out one asterisk
+          fi
+          continue
+        fi
+        input+="$char"
+        echo -n '*'
+      done < /dev/tty
+    else
+      # No terminal (piped or non-interactive): fall back to a plain read.
+      read -rs input < "$src"
+    fi
+    echo ""
+
     if [ -z "$input" ]; then
       fail "$var_name is required. Cannot continue."
     fi
@@ -585,23 +610,96 @@ if [ -n "$EC_OAUTH_CLIENT_SECRET" ] && [ -n "$EDGECONNECT_ID" ]; then
 fi
 
 if [ "$EC_REUSED" = false ]; then
-  # Remove any leftover configuration using our name. Its secret is
-  # unrecoverable, so it is dead weight and would also collide on create.
-  EXISTING_JSON=$(curl -s -H "Authorization: Bearer $EC_MGMT_TOKEN" "$EC_API")
-  for stale_id in $(echo "$EXISTING_JSON" | python3 -c "
+  # Look for a leftover configuration using our name.
+  #
+  # The list endpoint returns ONLY ids — no name, no hostPatterns — so every
+  # entry has to be fetched individually to find out what it is. Filtering the
+  # list response by name silently matches nothing, deletes nothing, and the
+  # create then fails with a confusing message about a location that already
+  # exists.
+  echo "  Checking for an existing EdgeConnect named '$EDGECONNECT_NAME'..."
+  EC_CONFLICT_ID=""
+  for cand_id in $(curl -s -H "Authorization: Bearer $EC_MGMT_TOKEN" "$EC_API" | python3 -c "
 import json,sys
 try:
     d = json.load(sys.stdin)
 except Exception:
     sys.exit(0)
-items = d.get('edgeConnects', d if isinstance(d, list) else [])
-for e in items:
-    if e.get('name') == '${EDGECONNECT_NAME}':
+for e in d.get('edgeConnects', d if isinstance(d, list) else []):
+    if e.get('id'):
         print(e['id'])
 " 2>/dev/null); do
-    echo "  Removing stale EdgeConnect $stale_id..."
-    curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $EC_MGMT_TOKEN" "$EC_API/$stale_id"
+    cand_name=$(curl -s -H "Authorization: Bearer $EC_MGMT_TOKEN" "$EC_API/$cand_id" | python3 -c "
+import json,sys
+try:
+    print(json.load(sys.stdin).get('name',''))
+except Exception:
+    pass
+" 2>/dev/null)
+    if [ "$cand_name" = "$EDGECONNECT_NAME" ]; then
+      EC_CONFLICT_ID="$cand_id"
+      break
+    fi
   done
+
+  if [ -n "$EC_CONFLICT_ID" ]; then
+    # Deleting needs app-engine:edge-connects:delete, which is NOT one of the
+    # six required permissions.
+    #
+    # It has to be requested as a separate token, not bundled into the main one
+    # above. Dynatrace SSO grants scopes all-or-nothing: ask for four scopes
+    # when the client holds three and the entire request fails with a bare
+    # `400 invalid_request` — no indication of which scope was the problem. So
+    # a client that followed the documented six permissions would fail at this
+    # step instead of at worst losing the ability to self-clean.
+    EC_DEL_TOKEN=$(curl -s -X POST "$SSO_URL" \
+      --data-urlencode "grant_type=client_credentials" \
+      --data-urlencode "client_id=${DEPLOY_OAUTH_CLIENT_ID}" \
+      --data-urlencode "client_secret=${DEPLOY_OAUTH_CLIENT_SECRET}" \
+      --data-urlencode "scope=app-engine:edge-connects:delete" \
+      --data-urlencode "resource=urn:dtenvironment:${TENANT_ID}" \
+      | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+
+    if [ -n "$EC_DEL_TOKEN" ]; then
+      DEL_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+        -H "Authorization: Bearer $EC_DEL_TOKEN" "$EC_API/$EC_CONFLICT_ID")
+    else
+      DEL_CODE="no-scope"
+    fi
+
+    case "$DEL_CODE" in
+      2*)
+        ok "Removed pre-existing EdgeConnect '$EDGECONNECT_NAME'"
+        ;;
+      *)
+        echo -e "  ${RED}✗ An EdgeConnect named '${EDGECONNECT_NAME}' already exists${NC}"
+        echo -e "  ${YELLOW}    id: ${EC_CONFLICT_ID}${NC}"
+        echo ""
+        if [ "$DEL_CODE" = "no-scope" ]; then
+          echo -e "  ${YELLOW}  Your OAuth client does not have app-engine:edge-connects:delete,${NC}"
+          echo -e "  ${YELLOW}  so setup cannot remove it for you.${NC}"
+        else
+          echo -e "  ${YELLOW}  It could not be removed automatically (HTTP ${DEL_CODE}).${NC}"
+        fi
+        echo -e "  ${YELLOW}  Its OAuth client secret is shown only once at creation and cannot${NC}"
+        echo -e "  ${YELLOW}  be read back, so this setup cannot adopt it either. It has to go.${NC}"
+        echo ""
+        echo -e "  ${BOLD}  Delete it, then re-run ./setup.sh${NC}"
+        echo ""
+        echo -e "  ${YELLOW}  In the UI:${NC}"
+        echo -e "      Settings → General → External requests → EdgeConnect tab"
+        echo -e "      delete '${EDGECONNECT_NAME}'"
+        echo ""
+        echo -e "  ${YELLOW}  Or let setup do it next time by adding this permission to your${NC}"
+        echo -e "  ${YELLOW}  OAuth client (Account Management → IAM → OAuth clients):${NC}"
+        echo -e "      app-engine:edge-connects:delete"
+        echo ""
+        fail "Cannot create '${EDGECONNECT_NAME}' while another one has that name."
+        ;;
+    esac
+  else
+    ok "No name conflict"
+  fi
 
   echo "  Creating EdgeConnect '$EDGECONNECT_NAME' → host pattern $PRIVATE_IP ..."
   EC_CREATE_BODY=$(printf '{"name":"%s","hostPatterns":["%s"]}' "$EDGECONNECT_NAME" "$PRIVATE_IP")
