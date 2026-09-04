@@ -224,10 +224,30 @@ Run apps              → app-engine:apps:run
 
 ## 1.5 ⬜ Create the EdgeConnect configuration
 
-This one is in your **environment**, not Account Management. Search **EdgeConnect**, or go
-to Settings → General → **External requests**.
+This one is in your **environment**, not Account Management.
 
-> ### Name it exactly this
+> **There is no EdgeConnect app.** Searching "EdgeConnect" routes you to a settings page.
+> Go to **Settings → General → External requests**, then pick the **EdgeConnect** tab
+> (the other tab is the allowlist), then **+ New EdgeConnect**.
+
+### First, get the VM's private IP
+
+You need it for the host pattern, so run this on the Linux machine before you start:
+
+```bash
+hostname -I | awk '{print $1}'
+```
+
+### Then fill the form
+
+The form has exactly two fields.
+
+| Field | Value |
+|---|---|
+| **Name** | `bizobs-demonstrator` |
+| **Host patterns** | the VM's private IP from above |
+
+> ### The name must match exactly
 > ```
 > bizobs-demonstrator
 > ```
@@ -235,23 +255,42 @@ to Settings → General → **External requests**.
 > literal. If the name differs by even one character, the tunnel will start and appear
 > healthy but never associate, and the failure surfaces much later as a vague failed
 > connection test in the app. Nothing validates this for you.
+>
+> The name must be RFC 1123 label compliant, max 50 characters. `bizobs-demonstrator`
+> qualifies (lowercase alphanumeric plus hyphens).
 
-- Leave **host patterns empty**. The app fills them in later.
-- If the form lets you **point at your existing OAuth client** from 1.4, do that.
-- If it insists on **generating its own** OAuth client, that's fine: use the generated one
-  for EdgeConnect and keep the 1.4 client for the app install. `setup.sh` asks for them
-  separately.
+**About host patterns.** They are **required**, and a given pattern can belong to only one
+EdgeConnect configuration. They live in this Dynatrace-side config, not in the YAML, which is
+why the YAML `setup.sh` generates contains only the name and the OAuth block. The `name` field
+is what links the two together. Wildcards are supported (`*.example.org`) but a plain private
+IP is what you want here.
 
-**Record whichever client ID and secret EdgeConnect ends up using as
-`EC_OAUTH_CLIENT_ID` and `EC_OAUTH_CLIENT_SECRET`.**
+### Download the YAML immediately
+
+Click **Download** as soon as the configuration is created.
+
+> **The OAuth client secret is displayed once and cannot be retrieved.** You can re-download
+> the config file later, but the secret will no longer be in it. If you miss it, delete the
+> EdgeConnect configuration and create it again.
+
+Dynatrace **auto-generates a dedicated OAuth client** for each EdgeConnect configuration.
+There is no option to point it at the client you made in 1.4. That's expected: the 1.4 client
+is for the **app deploy**, this generated one is for the **tunnel**. `setup.sh` prompts for the
+two pairs separately.
+
+From the downloaded YAML, record:
+- `oauth.client_id` → **`EC_OAUTH_CLIENT_ID`**
+- `oauth.client_secret` → **`EC_OAUTH_CLIENT_SECRET`**
 
 ## Phase 1 checklist
 
 - [x] Tenant ID and `ENV_TYPE` recorded
 - [x] `PLATFORM_TOKEN` created (`dt0s16.…`)
 - [x] Ingest verified with `Bearer`
-- [ ] `OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET` created
-- [ ] EdgeConnect created and named exactly `bizobs-demonstrator`
+- [ ] `DEPLOY_OAUTH_CLIENT_ID` / `SECRET` created (the 1.4 client, for the app deploy)
+- [ ] VM private IP noted (`hostname -I | awk '{print $1}'`)
+- [ ] EdgeConnect created, named exactly `bizobs-demonstrator`, host pattern = private IP
+- [ ] `edgeConnect.yaml` downloaded, and `EC_OAUTH_CLIENT_ID` / `SECRET` recorded from it
 
 ---
 
