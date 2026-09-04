@@ -223,12 +223,11 @@ printf 'metrics   : '; curl -s -o /dev/null -w '%{http_code}\n' -X POST "$INGEST
 | **Subject user email** | your email |
 | **Description** | `Business Observability Demonstrator` |
 
-Tick **seven** permissions:
+Tick these **six** permissions:
 
 ```
 Install apps            → app-engine:apps:install
 Run apps                → app-engine:apps:run
-Uninstall apps          → app-engine:apps:delete
 Connect EdgeConnect     → app-engine:edge-connects:connect
 Read EdgeConnect        → app-engine:edge-connects:read
 Write EdgeConnect       → app-engine:edge-connects:write
@@ -238,10 +237,13 @@ Manage OAuth clients    → oauth2:clients:manage
 | Permission | Why it's needed |
 |---|---|
 | `apps:install` / `apps:run` | Deploy the app into your tenant |
-| `apps:delete` | Remove the app again (`npx dt-app uninstall`) |
 | `edge-connects:connect` | The tunnel container authenticates with this |
 | `edge-connects:read` / `:write` | `setup.sh` creates the EdgeConnect and sets its host pattern |
 | `oauth2:clients:manage` | Creating an EdgeConnect mints an OAuth client for the tunnel |
+
+**Optional:** `app-engine:apps:delete` lets you uninstall the app with
+`npx dt-app uninstall` instead of clicking through the UI. Nothing in setup needs it, and you
+can remove the app from **Hub → Manage** without it.
 
 > **All of these are requested together in a single token call**, so a missing one fails the
 > whole request rather than degrading. If `setup.sh` stops at the EdgeConnect step, a scope is
@@ -257,7 +259,7 @@ CLIENT_SECRET='dt0s02.XXXXXXXX.YYYYYYYY'
 TENANT='abc12345'
 SSO='https://sso.dynatrace.com/sso/oauth2/token'   # sprint: https://sso-sprint.dynatracelabs.com/sso/oauth2/token
 
-for s in app-engine:apps:install app-engine:apps:run app-engine:apps:delete \
+for s in app-engine:apps:install app-engine:apps:run \
          app-engine:edge-connects:connect app-engine:edge-connects:read \
          app-engine:edge-connects:write oauth2:clients:manage; do
   printf '%-40s ' "$s"
@@ -340,7 +342,7 @@ done
 - [x] Tenant ID and `ENV_TYPE` recorded
 - [x] `PLATFORM_TOKEN` created (`dt0s16.…`)
 - [x] Ingest verified with `Bearer`
-- [ ] OAuth client created with **all seven** permissions from 1.4
+- [ ] OAuth client created with **all six** permissions from 1.4
 - [ ] Scopes verified with the loop in 1.4 — every one reports GRANTED
 - [ ] `DEPLOY_OAUTH_CLIENT_ID` / `DEPLOY_OAUTH_CLIENT_SECRET` recorded
 
@@ -462,7 +464,7 @@ Once Phase 2 runs clean:
 
 ### From the CLI
 
-Needs `app-engine:apps:delete` on the OAuth client (see 1.4).
+Only works if you added the optional `app-engine:apps:delete` permission (see 1.4).
 
 ```bash
 cd ~/Business-Observability-Demonstrator

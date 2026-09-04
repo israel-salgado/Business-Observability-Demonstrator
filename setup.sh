@@ -466,6 +466,26 @@ if ! sudo docker info &>/dev/null 2>&1; then
   fail "Docker is installed but the daemon isn't responding. Check: sudo systemctl status docker"
 fi
 
+# Make sure Docker starts on boot, whether or not we installed it.
+#
+# The EdgeConnect container runs with --restart always, but that only means
+# "Docker restarts it" — it does nothing if the Docker daemon itself never
+# starts. On a host where Docker was already present but not enabled, a reboot
+# leaves the daemon down, the tunnel never comes up, and the app reports a vague
+# connection failure with nothing pointing at the cause.
+if command -v systemctl >/dev/null 2>&1; then
+  if ! systemctl is-enabled docker >/dev/null 2>&1; then
+    if sudo systemctl enable docker >/dev/null 2>&1; then
+      ok "Docker enabled at boot"
+    else
+      warn "Could not enable Docker at boot. After a reboot the EdgeConnect tunnel"
+      warn "will not come back until you run: sudo systemctl enable --now docker"
+    fi
+  else
+    ok "Docker enabled at boot"
+  fi
+fi
+
 # ── Step 2: npm install ────────────────────────────────────
 step "Step 2/6: Installing packages"
 
@@ -733,13 +753,32 @@ if [ -f "$SCRIPT_DIR/logs/server.log" ]; then
     ok "Rotated previous server.log ($(( LOG_SIZE / 1048576 ))MB)"
   fi
 fi
+# systemd if we can, nohup if we can't — but say which, because the difference
+# only shows up after a reboot.
+#
+# `sudo -n true` tests for a *currently valid* sudo credential, not for whether
+# the user has sudo at all. Type your password early in the run and it succeeds;
+# if the sudo timestamp (15 minutes by default) expires during a long npm
+# install or Docker pull, the same machine silently takes the nohup path
+# instead. The demo works either way, then the server does not come back after a
+# reboot, and nothing in the output ever said so.
+SERVER_UNDER_SYSTEMD=false
 if command -v systemctl >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
   bash "$SCRIPT_DIR/scripts/install-systemd-service.sh" --enable --restart >/dev/null
-  ok "Server started via systemd (bizobs-server.service)"
+  SERVER_UNDER_SYSTEMD=true
+  ok "Server started via systemd (bizobs-server.service) — survives reboot"
 else
   nohup npm start >> "$SCRIPT_DIR/logs/server.log" 2>&1 &
   SERVER_PID=$!
   echo "$SERVER_PID" > "$SCRIPT_DIR/server.pid"
+  warn "Server started with nohup — it will NOT survive a reboot."
+  if ! command -v systemctl >/dev/null 2>&1; then
+    warn "  Reason: no systemd on this host."
+  else
+    warn "  Reason: sudo needed a password at this point in the run."
+    warn "  Install the service now with:"
+    warn "    sudo bash scripts/install-systemd-service.sh --enable --restart"
+  fi
 fi
 
 for i in {1..20}; do
@@ -777,5 +816,35 @@ echo -e "  Commands:"
 echo -e "    tail -f logs/server.log               # Server logs"
 echo -e "    docker logs -f edgeconnect-bizobs     # EdgeConnect logs"
 echo -e "    curl localhost:8080/api/health        # Health check"
-echo -e "    kill \$(cat server.pid)                # Stop server"
+if [ "$SERVER_UNDER_SYSTEMD" = true ]; then
+  echo -e "    sudo systemctl stop bizobs-server     # Stop server"
+  echo -e "    sudo systemctl restart bizobs-server  # Restart server"
+else
+  echo -e "    kill \$(cat server.pid)                # Stop server"
+fi
+echo -e "    ./setup.sh --reset                    # Start over with new credentials"
+echo ""
+echo -e "  ${BOLD}Removing all of this later${NC}"
+echo ""
+echo -e "  ${YELLOW}1. The app, from your tenant:${NC}"
+echo -e "     In Dynatrace go to ${BOLD}Hub → Manage${NC} (it opens on Discover, which only"
+echo -e "     lists apps you can install — installed ones are under Manage)."
+echo -e "     Search ${BOLD}demonstrator${NC} and delete it."
+echo ""
+echo -e "     Or from here, if your OAuth client has ${BOLD}app-engine:apps:delete${NC}:"
+echo -e "       npx dt-app uninstall --dry-run     # preview"
+echo -e "       npx dt-app uninstall"
+echo ""
+echo -e "  ${YELLOW}2. The EdgeConnect, from your tenant:${NC}"
+echo -e "     Settings → General → External requests → EdgeConnect tab →"
+echo -e "     delete ${BOLD}${EDGECONNECT_NAME}${NC}. Its OAuth client is removed with it."
+echo ""
+echo -e "  ${YELLOW}3. This host:${NC}"
+if [ "$SERVER_UNDER_SYSTEMD" = true ]; then
+  echo -e "       sudo systemctl disable --now bizobs-server"
+else
+  echo -e "       kill \$(cat server.pid)"
+fi
+echo -e "       sudo docker rm -f ${CONTAINER_NAME}"
+echo -e "       rm -rf $SCRIPT_DIR"
 echo ""
