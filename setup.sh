@@ -115,7 +115,7 @@ echo -e "${BLUE}"
 cat << 'BANNER'
 ╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
-║     Business Observability Demonstrator                             ║
+║     Business Observability Demonstrator                      ║
 ║     One-Command Setup                                        ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -997,7 +997,20 @@ oauth:
   resource: urn:dtenvironment:${TENANT_ID}
   endpoint: ${SSO_URL}
 EOF
-chmod 600 "$SCRIPT_DIR/edgeconnect/edgeConnect.yaml"
+# 644, deliberately, NOT 600.
+#
+# The EdgeConnect image runs as user `nonroot`, so a bind-mounted file owned by
+# the invoking user with mode 600 is unreadable inside the container. The
+# failure is misleading: the config parses as empty and the container reports
+#   Error while loading configuration: missing field `name`
+# while the file on disk plainly has a name. It then crash-loops under
+# --restart always.
+#
+# The file does hold the tunnel's OAuth secret, so this is a real trade-off. It
+# is acceptable here because this host is a single-purpose demo box, and the
+# alternative — chown to the container's uid — makes the file unreadable to the
+# person who has to troubleshoot it.
+chmod 644 "$SCRIPT_DIR/edgeconnect/edgeConnect.yaml"
 ok "EdgeConnect YAML generated"
 
 CONTAINER_NAME="edgeconnect-bizobs"
@@ -1016,11 +1029,41 @@ sudo docker run -d --restart always \
   --mount "type=bind,src=$SCRIPT_DIR/edgeconnect/edgeConnect.yaml,dst=/edgeConnect.yaml" \
   dynatrace/edgeconnect:latest > /dev/null
 
-sleep 5
-if sudo docker ps --filter "name=$CONTAINER_NAME" --format '{{.Status}}' | grep -q "Up"; then
-  ok "EdgeConnect running"
+# Give it a moment, then confirm it is actually up rather than crash-looping.
+# `--restart always` means a container that fails on startup shows as
+# "Restarting", not "Exited", so a naive check can read as healthy.
+sleep 6
+EC_STATUS="$(sudo docker ps -a --filter "name=$CONTAINER_NAME" --format '{{.Status}}' 2>/dev/null)"
+
+if echo "$EC_STATUS" | grep -q '^Up'; then
+  # Up is necessary but not sufficient: the tunnel authenticates and registers
+  # a few seconds after the process starts. Look for the confirmation.
+  if sudo docker logs --since 30s "$CONTAINER_NAME" 2>&1 | grep -q 'Connection verified'; then
+    ok "EdgeConnect running and tunnel verified"
+  else
+    ok "EdgeConnect running (tunnel still connecting)"
+  fi
 else
-  warn "EdgeConnect may not have started — check: docker logs $CONTAINER_NAME"
+  warn "EdgeConnect did not start cleanly — status: ${EC_STATUS:-no container}"
+  echo ""
+  echo -e "  ${BOLD}Diagnose it with these, in order:${NC}"
+  echo ""
+  echo -e "  ${CYAN}1. What the container is saying${NC}"
+  echo -e "     sudo docker logs --tail 30 ${CONTAINER_NAME}"
+  echo ""
+  echo -e "  ${CYAN}2. Whether it is crash-looping${NC}"
+  echo -e "     sudo docker ps -a --filter name=${CONTAINER_NAME}"
+  echo -e "     ${DIM}\"Restarting\" means it starts, fails, and is restarted forever.${NC}"
+  echo ""
+  echo -e "  ${CYAN}3. Whether the config is readable inside the container${NC}"
+  echo -e "     ls -l ${SCRIPT_DIR}/edgeconnect/edgeConnect.yaml"
+  echo -e "     ${DIM}Must be world-readable (644). The image runs as 'nonroot', so a${NC}"
+  echo -e "     ${DIM}600 file reports 'missing field name' even though the name is there.${NC}"
+  echo ""
+  echo -e "  ${YELLOW}After fixing, restart it with:${NC}"
+  echo -e "     sudo docker restart ${CONTAINER_NAME}"
+  echo ""
+  warn "Continuing — the app will deploy, but it cannot reach this host until the tunnel is up."
 fi
 
 # ── Step 5: Deploy app ─────────────────────────────────────
@@ -1162,9 +1205,9 @@ fi
 
 # ── Done ────────────────────────────────────────────────────
 echo ""
-echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗"
-echo -e "║                    Setup Complete!                        ║"
-echo -e "╚══════════════════════════════════════════════════════════╝${NC}"
+echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗"
+echo -e "║                        Setup Complete                        ║"
+echo -e "╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  ${BOLD}Open Dynatrace → Apps → Business Observability Demonstrator${NC}"
 echo ""

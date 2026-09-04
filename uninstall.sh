@@ -44,9 +44,9 @@ warn() { echo -e "  ${YELLOW}⚠ $1${NC}"; }
 info() { echo -e "  ${CYAN}→ $1${NC}"; }
 
 echo -e "${BOLD}"
-echo "╔══════════════════════════════════════════════════════════╗"
-echo "║   Business Observability Demonstrator — Full Uninstall    ║"
-echo "╚══════════════════════════════════════════════════════════╝"
+echo "╔══════════════════════════════════════════════════════════════╗"
+echo "║   Business Observability Demonstrator — Full Uninstall       ║"
+echo "╚══════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
 echo -e "  ${RED}This removes the Demonstrator from this host.${NC}"
@@ -278,9 +278,9 @@ fi
 
 # ── Done ────────────────────────────────────────────────────
 echo ""
-echo -e "${GREEN}╔══════════════════════════════════════════════════════════╗"
-echo -e "║                 Uninstall Complete                        ║"
-echo -e "╚══════════════════════════════════════════════════════════╝${NC}"
+echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗"
+echo -e "║                      Uninstall Complete                      ║"
+echo -e "╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
 if [ "$HOST_ONLY" = false ] && [ "${APP_REMOVED:-false}" != true ]; then

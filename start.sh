@@ -37,7 +37,7 @@ fail() { echo -e "  ${RED}✗ $1${NC}"; exit 1; }
 echo -e "${BLUE}"
 cat << 'BANNER'
 ╔══════════════════════════════════════════════════════════════╗
-║   Business Observability Demonstrator — Bootstrap             ║
+║   Business Observability Demonstrator — Bootstrap            ║
 ╚══════════════════════════════════════════════════════════════╝
 BANNER
 echo -e "${NC}"
@@ -136,10 +136,12 @@ cat << 'INFO'
     2. Tenant ID           the abc12345 part of your Dynatrace URL
     3. Platform token      dt0s16...   IAM -> Platform tokens
     4. OAuth client        dt0s02...   IAM -> OAuth clients
-                           needs 4 permissions:
+                           needs 6 permissions:
                              app-engine:apps:install
                              app-engine:apps:run
                              app-engine:edge-connects:connect
+                             app-engine:edge-connects:read
+                             app-engine:edge-connects:write
                              oauth2:clients:manage
 
   You do NOT need to create an EdgeConnect by hand. Setup creates it for you,
