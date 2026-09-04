@@ -159,6 +159,25 @@ api-tokens:tokens:write
 
 Copy the token. It starts with `dt0s16.` and is shown once. **Record as `PLATFORM_TOKEN`.**
 
+> ### What a platform token cannot do
+> Don't go looking for these in the platform token picker — they aren't there, and their
+> absence is why a second credential exists:
+>
+> | Scope | Where it lives instead |
+> |---|---|
+> | `oauth2:clients:manage` | OAuth clients only (1.4) |
+> | `app-engine:apps:install` / `:run` / `:delete` | OAuth clients only (1.4) |
+> | `app-engine:edge-connects:connect` | OAuth clients only (1.4) |
+>
+> The platform token *can* hold `app-engine:edge-connects:read` and `:write`, which is why the
+> app can manage host patterns. What it cannot do is **create** an EdgeConnect, because that
+> mints an OAuth client. Posting to the EdgeConnect endpoint with a `dt0s16` token returns:
+>
+> ```json
+> 403 {"missingScopes":["oauth2:clients:manage"],
+>      "message":"Missing permission to create OAuth client"}
+> ```
+
 ## 1.3 ✅ Verify the token can ingest
 
 Already verified against a Gen3 tenant, so you can skip this unless something later goes
@@ -204,14 +223,57 @@ printf 'metrics   : '; curl -s -o /dev/null -w '%{http_code}\n' -X POST "$INGEST
 | **Subject user email** | your email |
 | **Description** | `Business Observability Demonstrator` |
 
-Tick **four** permissions:
+Tick **seven** permissions:
 
 ```
-Install apps          → app-engine:apps:install
-Run apps              → app-engine:apps:run
-Connect EdgeConnect   → app-engine:edge-connects:connect
-Manage OAuth clients  → oauth2:clients:manage
+Install apps            → app-engine:apps:install
+Run apps                → app-engine:apps:run
+Uninstall apps          → app-engine:apps:delete
+Connect EdgeConnect     → app-engine:edge-connects:connect
+Read EdgeConnect        → app-engine:edge-connects:read
+Write EdgeConnect       → app-engine:edge-connects:write
+Manage OAuth clients    → oauth2:clients:manage
 ```
+
+| Permission | Why it's needed |
+|---|---|
+| `apps:install` / `apps:run` | Deploy the app into your tenant |
+| `apps:delete` | Remove the app again (`npx dt-app uninstall`) |
+| `edge-connects:connect` | The tunnel container authenticates with this |
+| `edge-connects:read` / `:write` | `setup.sh` creates the EdgeConnect and sets its host pattern |
+| `oauth2:clients:manage` | Creating an EdgeConnect mints an OAuth client for the tunnel |
+
+> **All of these are requested together in a single token call**, so a missing one fails the
+> whole request rather than degrading. If `setup.sh` stops at the EdgeConnect step, a scope is
+> missing here.
+
+### Checking which scopes a client actually has
+
+Don't assume the tick boxes saved. Ask the SSO endpoint, one scope at a time:
+
+```bash
+CLIENT_ID='dt0s02.XXXXXXXX'
+CLIENT_SECRET='dt0s02.XXXXXXXX.YYYYYYYY'
+TENANT='abc12345'
+SSO='https://sso.dynatrace.com/sso/oauth2/token'   # sprint: https://sso-sprint.dynatracelabs.com/sso/oauth2/token
+
+for s in app-engine:apps:install app-engine:apps:run app-engine:apps:delete \
+         app-engine:edge-connects:connect app-engine:edge-connects:read \
+         app-engine:edge-connects:write oauth2:clients:manage; do
+  printf '%-40s ' "$s"
+  curl -s -X POST "$SSO" \
+    --data-urlencode grant_type=client_credentials \
+    --data-urlencode "client_id=$CLIENT_ID" \
+    --data-urlencode "client_secret=$CLIENT_SECRET" \
+    --data-urlencode "scope=$s" \
+    --data-urlencode "resource=urn:dtenvironment:$TENANT" \
+    | grep -q access_token && echo GRANTED || echo DENIED
+done
+```
+
+> **Use `--data-urlencode`, not `-d`.** `-d` sends the body verbatim, and hand-encoding spaces
+> as `%20` is sent literally too. Either way the request is rejected and *every* scope reports
+> DENIED, which reads exactly like a permissions problem when it is a curl problem.
 
 **Record as `DEPLOY_OAUTH_CLIENT_ID` and `DEPLOY_OAUTH_CLIENT_SECRET`.**
 
@@ -278,7 +340,8 @@ Manage OAuth clients  → oauth2:clients:manage
 - [x] Tenant ID and `ENV_TYPE` recorded
 - [x] `PLATFORM_TOKEN` created (`dt0s16.…`)
 - [x] Ingest verified with `Bearer`
-- [ ] OAuth client created with **all four** permissions, including `oauth2:clients:manage`
+- [ ] OAuth client created with **all seven** permissions from 1.4
+- [ ] Scopes verified with the loop in 1.4 — every one reports GRANTED
 - [ ] `DEPLOY_OAUTH_CLIENT_ID` / `DEPLOY_OAUTH_CLIENT_SECRET` recorded
 
 Nothing else. EdgeConnect, its OAuth client, the host pattern, and the YAML are all handled by
@@ -384,6 +447,28 @@ Once Phase 2 runs clean:
    Items 7 to 10 (OpenPipeline pipeline, routing, BizEvent capture rule, OneAgent feature
    flags) are what make business events actually work
 6. **Home**: pick a pre-built template and run it
+
+---
+
+## Removing the app from your tenant
+
+### From the UI
+
+**Hub → Manage → search "demonstrator" → delete**
+
+> The Hub opens on the **Discover** tab by default, which only shows apps available to
+> install. Installed apps are under **Manage**. Custom apps are not under Settings, which is
+> the first place most people look.
+
+### From the CLI
+
+Needs `app-engine:apps:delete` on the OAuth client (see 1.4).
+
+```bash
+cd ~/Business-Observability-Demonstrator
+npx dt-app uninstall --dry-run   # check what it would remove
+npx dt-app uninstall
+```
 
 ---
 

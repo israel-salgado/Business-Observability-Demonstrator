@@ -525,13 +525,17 @@ EC_API="$APPS_URL/platform/app-engine/edge-connect/v1/edge-connects"
 # "bizobs-demonstrator" resolves to nothing locally and the request dies after
 # a tunnel that otherwise looks perfectly healthy.
 echo "  Requesting OAuth token for EdgeConnect provisioning..."
+# --data-urlencode, not -d. The scope parameter is a space-separated list, and
+# `-d` sends the body verbatim without form-encoding, so the spaces go out raw.
+# Encoding them by hand as %20 is worse: that is sent literally too, the SSO
+# endpoint rejects the whole request, and every scope comes back denied — which
+# looks exactly like a permissions problem and is not.
 EC_MGMT_TOKEN=$(curl -s -X POST "$SSO_URL" \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d "grant_type=client_credentials" \
-  -d "client_id=${DEPLOY_OAUTH_CLIENT_ID}" \
-  -d "client_secret=${DEPLOY_OAUTH_CLIENT_SECRET}" \
-  -d "scope=oauth2:clients:manage app-engine:edge-connects:write app-engine:edge-connects:read" \
-  -d "resource=urn:dtenvironment:${TENANT_ID}" \
+  --data-urlencode "grant_type=client_credentials" \
+  --data-urlencode "client_id=${DEPLOY_OAUTH_CLIENT_ID}" \
+  --data-urlencode "client_secret=${DEPLOY_OAUTH_CLIENT_SECRET}" \
+  --data-urlencode "scope=oauth2:clients:manage app-engine:edge-connects:write app-engine:edge-connects:read" \
+  --data-urlencode "resource=urn:dtenvironment:${TENANT_ID}" \
   | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
 
 if [ -z "$EC_MGMT_TOKEN" ]; then
